@@ -76,8 +76,16 @@ class ProxyService extends ChangeNotifier {
       serverSocket.listen((localSocket) async {
         try {
           final forward = await client.forwardLocal('', 0);
-          localSocket.pipe(forward.stream as StreamConsumer<List<int>>);
-          forward.stream.pipe(localSocket);
+          forward.stream.listen(
+            (data) => localSocket.add(data),
+            onDone: () => localSocket.destroy(),
+            onError: (_) => localSocket.destroy(),
+          );
+          localSocket.listen(
+            (data) => forward.sink.add(data),
+            onDone: () => forward.sink.close(),
+            onError: (_) => forward.sink.close(),
+          );
         } catch (_) {}
       });
 
