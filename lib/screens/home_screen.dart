@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'servers_tab.dart';
 import 'active_tunnels_tab.dart';
 import 'logs_tab.dart';
 import 'settings_tab.dart';
 import '../services/local_api_server.dart';
+import '../services/proxy_service.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -14,18 +16,29 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _index = 0;
   String _apiAddress = 'localhost:7070';
+  LocalApiServer? _apiServer;
 
   @override
   void initState() {
     super.initState();
-    _findLocalIP();
+    _startApiServer();
   }
 
-  Future<void> _findLocalIP() async {
+  Future<void> _startApiServer() async {
+    final proxyService = Provider.of<ProxyService>(context, listen: false);
+    _apiServer = LocalApiServer(proxyService);
+    await _apiServer!.start();
     final ip = await LocalApiServer.getLocalIp();
+    final port = _apiServer!.activePort ?? LocalApiServer.port;
     if (mounted) {
-      setState(() => _apiAddress = '$ip:7070');
+      setState(() => _apiAddress = '$ip:$port');
     }
+  }
+
+  @override
+  void dispose() {
+    _apiServer?.stop();
+    super.dispose();
   }
 
   @override

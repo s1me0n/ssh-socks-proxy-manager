@@ -19,20 +19,24 @@ class LocalApiServer {
 
   Future<void> start() async {
     try {
-      _server = await HttpServer.bind(InternetAddress.loopbackIPv4, port,
+      _server = await HttpServer.bind(InternetAddress.anyIPv4, port,
           shared: true);
       _activePort = port;
-      debugPrint('API server started on 127.0.0.1:$port');
+      debugPrint('🌐 API Server started on 0.0.0.0:$port');
+      debugPrint('🌐 API Server URL: http://0.0.0.0:$port');
+      final ip = await getLocalIp();
+      debugPrint('🌐 Device IP: $ip — access via http://$ip:$port');
       _server!.listen(_handleRequest,
           onError: (e) => debugPrint('API error: $e'));
     } catch (e) {
       debugPrint('Failed to start API server on $port: $e');
       // Try fallback port
       try {
-        _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 7071,
+        _server = await HttpServer.bind(InternetAddress.anyIPv4, 7071,
             shared: true);
         _activePort = 7071;
-        debugPrint('API server started on 127.0.0.1:7071 (fallback)');
+        debugPrint('🌐 API Server started on 0.0.0.0:7071 (fallback)');
+        debugPrint('🌐 API Server URL: http://0.0.0.0:7071');
         _server!.listen(_handleRequest,
             onError: (e) => debugPrint('API error: $e'));
       } catch (e2) {
@@ -48,8 +52,23 @@ class LocalApiServer {
   }
 
   /// Get the API listen address for display.
+  /// Returns the first non-loopback IPv4 address found on the device.
   static Future<String> getLocalIp() async {
-    // API now binds to loopback only — always return 127.0.0.1.
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final iface in interfaces) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback) {
+            return addr.address;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Failed to get local IP: $e');
+    }
     return '127.0.0.1';
   }
 
