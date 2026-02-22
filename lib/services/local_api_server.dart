@@ -11,7 +11,7 @@ class LocalApiServer {
   LocalApiServer(this.proxyService);
 
   Future<void> start() async {
-    _server = await HttpServer.bind('127.0.0.1', port);
+    _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
     _server!.listen(_handleRequest);
   }
 
@@ -107,6 +107,21 @@ class LocalApiServer {
         }
         req.response.write(jsonEncode(
             {'success': true, 'message': 'All tunnels disconnected'}));
+      } else if (path == '/help' && method == 'GET') {
+        req.response.write(jsonEncode({
+          'api': 'SSH Proxy Manager API v1',
+          'port': 7070,
+          'termux_examples': [
+            'curl localhost:7070/status',
+            'curl localhost:7070/servers',
+            'curl localhost:7070/tunnels',
+            'curl -X POST localhost:7070/connect/{serverId}',
+            'curl -X POST localhost:7070/disconnect/{serverId}',
+            'curl -X POST localhost:7070/disconnect-all',
+            'curl -X POST localhost:7070/scan',
+          ],
+          'tip': 'Get server IDs from /servers endpoint'
+        }));
       } else {
         req.response.statusCode = 404;
         req.response.write(jsonEncode({
