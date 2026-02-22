@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../services/proxy_service.dart';
 import '../models/server_config.dart';
 import 'server_form_screen.dart';
 
 class ServersTab extends StatelessWidget {
-  const ServersTab({super.key});
+  final String apiAddress;
+  const ServersTab({super.key, this.apiAddress = 'localhost:7070'});
+
   @override
   Widget build(BuildContext context) {
     final svc = context.watch<ProxyService>();
@@ -13,12 +16,22 @@ class ServersTab extends StatelessWidget {
       appBar: AppBar(
         title: const Text('SSH Servers'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.api),
+            tooltip: 'API: $apiAddress',
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: 'http://$apiAddress'));
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Copied: http://$apiAddress')),
+              );
+            },
+          ),
           Padding(
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.only(right: 8),
             child: Chip(
-              label: const Text('API :7070',
-                  style: TextStyle(fontSize: 11)),
-              avatar: const Icon(Icons.api, size: 14),
+              label: Text('API $apiAddress',
+                  style: const TextStyle(fontSize: 11)),
+              avatar: const Icon(Icons.circle, size: 10, color: Colors.green),
             ),
           ),
         ],
