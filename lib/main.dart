@@ -43,6 +43,11 @@ Future<void> initializeBackgroundService() async {
       onStart: onBackgroundServiceStart,
       autoStart: false,
       isForegroundMode: true,
+      // The notification channel 'ssh_proxy_channel' is created natively
+      // in MainActivity.kt before Flutter starts. This is required because
+      // flutter_background_service does NOT auto-create custom channels —
+      // only its default 'FOREGROUND_DEFAULT' channel is auto-created.
+      // Without pre-creating the channel → crash on Android 8+ (API 26+).
       notificationChannelId: 'ssh_proxy_channel',
       initialNotificationTitle: 'SSH Proxy Manager',
       initialNotificationContent: 'Initializing...',
