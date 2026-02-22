@@ -9,6 +9,7 @@ class ServerConfig {
   bool isEnabled;
   final String authType; // 'password' or 'key'
   String? privateKey; // PEM format, loaded from secure storage
+  String? keyPassphrase; // optional passphrase for encrypted keys
 
   ServerConfig({
     required this.id,
@@ -21,9 +22,10 @@ class ServerConfig {
     this.isEnabled = false,
     this.authType = 'password',
     this.privateKey,
+    this.keyPassphrase,
   });
 
-  /// Serialize to JSON — secrets (password, privateKey) are NOT included.
+  /// Serialize to JSON — secrets (password, privateKey, keyPassphrase) are NOT included.
   /// They are stored separately in FlutterSecureStorage.
   Map<String, dynamic> toJson() => {
         'id': id,

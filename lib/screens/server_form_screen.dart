@@ -13,8 +13,9 @@ class ServerFormScreen extends StatefulWidget {
 class _ServerFormScreenState extends State<ServerFormScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _name, _host, _sshPort, _username,
-      _password, _socksPort, _privateKey;
+      _password, _socksPort, _privateKey, _keyPassphrase;
   bool _obscurePassword = true;
+  bool _obscurePassphrase = true;
   late String _authType;
 
   @override
@@ -28,6 +29,7 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     _password = TextEditingController(text: s?.password ?? '');
     _socksPort = TextEditingController(text: '${s?.socksPort ?? 1080}');
     _privateKey = TextEditingController(text: s?.privateKey ?? '');
+    _keyPassphrase = TextEditingController(text: s?.keyPassphrase ?? '');
     _authType = s?.authType ?? 'password';
   }
 
@@ -40,6 +42,7 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     _password.dispose();
     _socksPort.dispose();
     _privateKey.dispose();
+    _keyPassphrase.dispose();
     super.dispose();
   }
 
@@ -128,7 +131,7 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                     ))),
 
           // ─── Private key field ────────────────────────────────
-          if (_authType == 'key')
+          if (_authType == 'key') ...[
             TextFormField(
               controller: _privateKey,
               maxLines: 8,
@@ -150,6 +153,24 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                 return null;
               },
             ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _keyPassphrase,
+              obscureText: _obscurePassphrase,
+              decoration: InputDecoration(
+                labelText: 'Key Passphrase (optional)',
+                prefixIcon: const Icon(Icons.password),
+                hintText: 'Leave empty if key is not encrypted',
+                suffixIcon: IconButton(
+                  icon: Icon(_obscurePassphrase
+                      ? Icons.visibility
+                      : Icons.visibility_off),
+                  onPressed: () => setState(
+                      () => _obscurePassphrase = !_obscurePassphrase),
+                ),
+              ),
+            ),
+          ],
           const SizedBox(height: 24),
           FilledButton.icon(
             icon: Icon(isEdit ? Icons.save : Icons.add),
@@ -169,6 +190,9 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                 authType: _authType,
                 privateKey:
                     _authType == 'key' ? _privateKey.text : null,
+                keyPassphrase: _authType == 'key' && _keyPassphrase.text.isNotEmpty
+                    ? _keyPassphrase.text
+                    : null,
               );
               if (isEdit) {
                 svc.updateServer(cfg);

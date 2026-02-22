@@ -122,6 +122,7 @@ class _TunnelCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hasBandwidth = tunnel.bytesIn > 0 || tunnel.bytesOut > 0;
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: ListTile(
@@ -135,9 +136,10 @@ class _TunnelCard extends StatelessWidget {
         title: Text(tunnel.serverName),
         subtitle: Text(
             'SOCKS5  127.0.0.1:${tunnel.socksPort}  •  ${tunnel.uptimeString}'
+            '${hasBandwidth ? "\n${tunnel.bandwidthString}" : ""}'
             '${tunnel.isExternal ? "\nType: ${tunnel.proxyType}  •  Auth: ${tunnel.authType}" : ""}'
             '${tunnel.restartCount > 0 ? "  •  restarted ${tunnel.restartCount}x" : ""}'),
-        isThreeLine: tunnel.isExternal,
+        isThreeLine: tunnel.isExternal || hasBandwidth,
         trailing: onDisconnect != null
             ? IconButton(
                 icon: const Icon(Icons.stop_circle, color: Colors.red),

@@ -103,6 +103,9 @@ class LocalApiServer {
                     'restartCount': t.restartCount,
                     'proxyType': t.proxyType,
                     'authType': t.authType,
+                    'bytesIn': t.bytesIn,
+                    'bytesOut': t.bytesOut,
+                    'bandwidth': t.bandwidthString,
                   })
               .toList(),
           'externalPorts': proxyService.activeTunnels
@@ -121,6 +124,9 @@ class LocalApiServer {
                     'isExternal': t.isExternal,
                     'proxyType': t.proxyType,
                     'authType': t.authType,
+                    'bytesIn': t.bytesIn,
+                    'bytesOut': t.bytesOut,
+                    'bandwidth': t.bandwidthString,
                   })
               .toList(),
         }));
@@ -151,16 +157,25 @@ class LocalApiServer {
           username: data['username'],
           password: data['password'] ?? '',
           privateKey: data['privateKey'],
-          authType: data['authType'] ?? 'password',
+          keyPassphrase: data['keyPassphrase'],
+          authType: data['authType'] ??
+              (data['privateKey'] != null ? 'key' : 'password'),
           socksPort: data['socksPort'] ?? 1080,
         );
         proxyService.addServer(server);
         req.response
             .write(jsonEncode({'success': true, 'id': server.id}));
 
-        // ─── DELETE /servers/{id} ──────────────────────────────────
+        // ─── POST /servers/delete/{id} ─────────────────────────────
+      } else if (path.startsWith('/servers/delete/') && method == 'POST') {
+        final id = path.replaceFirst('/servers/delete/', '');
+        proxyService.deleteServer(id);
+        req.response.write(jsonEncode({'success': true}));
+
+        // ─── DELETE /servers/{id} (also supported) ─────────────────
       } else if (path.startsWith('/servers/') &&
-          path != '/servers/add' &&
+          !path.startsWith('/servers/add') &&
+          !path.startsWith('/servers/delete/') &&
           method == 'DELETE') {
         final id = path.replaceFirst('/servers/', '');
         proxyService.deleteServer(id);
@@ -173,16 +188,49 @@ class LocalApiServer {
           'progress': proxyService.scanProgress,
           'scannedPorts': proxyService.scannedPorts,
           'totalPorts': 65535,
-          'foundPorts': proxyService.activeTunnels
+          'found': proxyService.activeTunnels
               .where((t) => t.isExternal)
               .length,
         }));
 
+        // ─── GET /export ───────────────────────────────────────────
+      } else if (path == '/export' && method == 'GET') {
+        req.response.write(jsonEncode({
+          'servers': proxyService.exportServers(),
+          'exportedAt': DateTime.now().toIso8601String(),
+          'count': proxyService.servers.length,
+        }));
+
+        // ─── POST /import ──────────────────────────────────────────
+      } else if (path == '/import' && method == 'POST') {
+        final body = await utf8.decoder.bind(req).join();
+        final data = jsonDecode(body);
+        List<dynamic> serverList;
+        if (data is Map && data.containsKey('servers')) {
+          serverList = data['servers'] as List<dynamic>;
+        } else if (data is List) {
+          serverList = data;
+        } else {
+          req.response.statusCode = 400;
+          req.response.write(jsonEncode({
+            'success': false,
+            'error':
+                'Expected JSON array or object with "servers" key',
+          }));
+          await req.response.close();
+          return;
+        }
+        final added = proxyService.importServers(serverList);
+        req.response.write(jsonEncode({
+          'success': true,
+          'added': added,
+          'total': proxyService.servers.length,
+        }));
+
         // ─── GET /logs ─────────────────────────────────────────────
       } else if (path == '/logs' && method == 'GET') {
-        final limit = int.tryParse(
-                req.uri.queryParameters['limit'] ?? '50') ??
-            50;
+        final limit =
+            int.tryParse(req.uri.queryParameters['limit'] ?? '100') ?? 100;
         req.response.write(jsonEncode({
           'logs': proxyService.logs
               .take(limit)
@@ -227,25 +275,30 @@ class LocalApiServer {
           'api': 'SSH Proxy Manager API v2',
           'port': _activePort ?? port,
           'endpoints': [
-            'GET  /status            — full status',
-            'GET  /tunnels           — active tunnels',
-            'GET  /servers           — saved servers',
-            'POST /servers/add       — add server (JSON body)',
-            'DELETE /servers/{id}    — delete server',
-            'POST /connect/{id}     — connect server by ID',
-            'POST /disconnect/{id}  — disconnect server by ID',
-            'POST /disconnect-all   — stop all tunnels',
-            'POST /scan             — scan all ports',
-            'GET  /scan/progress    — scan progress',
-            'GET  /logs?limit=50    — connection logs',
+            'GET  /status              — full status',
+            'GET  /tunnels             — active tunnels',
+            'GET  /servers             — saved servers',
+            'POST /servers/add         — add server (JSON body)',
+            'POST /servers/delete/{id} — delete server by id',
+            'DELETE /servers/{id}      — delete server by id',
+            'POST /connect/{id}       — connect server by ID',
+            'POST /disconnect/{id}    — disconnect server by ID',
+            'POST /disconnect-all     — stop all tunnels',
+            'POST /scan               — scan all ports',
+            'GET  /scan/progress      — scan progress',
+            'GET  /logs?limit=100     — connection logs',
+            'GET  /export             — export servers (no secrets)',
+            'POST /import             — import/merge servers (JSON body)',
           ],
           'termux_examples': [
             'curl localhost:${_activePort ?? port}/status',
             'curl -X POST -H "Content-Type: application/json" -d \'{"name":"My Server","host":"1.2.3.4","username":"root","password":"pass"}\' localhost:${_activePort ?? port}/servers/add',
             'curl -X POST localhost:${_activePort ?? port}/connect/{serverId}',
-            'curl -X DELETE localhost:${_activePort ?? port}/servers/{serverId}',
+            'curl -X POST localhost:${_activePort ?? port}/servers/delete/{serverId}',
             'curl localhost:${_activePort ?? port}/scan/progress',
             'curl localhost:${_activePort ?? port}/logs',
+            'curl localhost:${_activePort ?? port}/export',
+            'curl -X POST -H "Content-Type: application/json" -d @servers.json localhost:${_activePort ?? port}/import',
           ],
         }));
       } else {

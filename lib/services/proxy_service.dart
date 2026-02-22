@@ -28,6 +28,9 @@ class ProxyService extends ChangeNotifier {
   late final LocalApiServer _apiServer;
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
+  /// Callback for updating background service notification.
+  void Function(int activeTunnelCount)? onTunnelCountChanged;
+
   ProxyService() {
     _loadServers();
     _startHealthCheck();
@@ -53,6 +56,11 @@ class ProxyService extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _notifyTunnelCount() {
+    final count = activeTunnels.where((t) => !t.isExternal).length;
+    onTunnelCountChanged?.call(count);
+  }
+
   // ─── Server persistence ───────────────────────────────────────────
 
   Future<void> _loadServers() async {
@@ -64,6 +72,8 @@ class ProxyService extends ChangeNotifier {
     for (final s in servers) {
       s.password = await _secureStorage.read(key: 'password_${s.id}') ?? '';
       s.privateKey = await _secureStorage.read(key: 'privateKey_${s.id}');
+      s.keyPassphrase =
+          await _secureStorage.read(key: 'keyPassphrase_${s.id}');
     }
 
     notifyListeners();
@@ -84,11 +94,18 @@ class ProxyService extends ChangeNotifier {
     } else {
       await _secureStorage.delete(key: 'privateKey_${s.id}');
     }
+    if (s.keyPassphrase != null && s.keyPassphrase!.isNotEmpty) {
+      await _secureStorage.write(
+          key: 'keyPassphrase_${s.id}', value: s.keyPassphrase!);
+    } else {
+      await _secureStorage.delete(key: 'keyPassphrase_${s.id}');
+    }
   }
 
   Future<void> _deleteSecrets(String id) async {
     await _secureStorage.delete(key: 'password_$id');
     await _secureStorage.delete(key: 'privateKey_$id');
+    await _secureStorage.delete(key: 'keyPassphrase_$id');
   }
 
   void addServer(ServerConfig s) {
@@ -112,8 +129,7 @@ class ProxyService extends ChangeNotifier {
 
   void deleteServer(String id) {
     final name =
-        servers.where((s) => s.id == id).map((s) => s.name).firstOrNull ??
-            id;
+        servers.where((s) => s.id == id).map((s) => s.name).firstOrNull ?? id;
     disconnectTunnel(id);
     servers.removeWhere((s) => s.id == id);
     _saveServers();
@@ -122,22 +138,73 @@ class ProxyService extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ─── Import / Export ──────────────────────────────────────────────
+
+  /// Export all servers as JSON (no secrets).
+  List<Map<String, dynamic>> exportServers() {
+    return servers.map((s) => s.toJson()).toList();
+  }
+
+  /// Import servers from JSON list, merging by host+username+sshPort.
+  /// Returns count of newly added servers.
+  int importServers(List<dynamic> jsonList) {
+    int added = 0;
+    for (final item in jsonList) {
+      final data = item as Map<String, dynamic>;
+      // Check for duplicates by host + username + sshPort
+      final exists = servers.any((s) =>
+          s.host == data['host'] &&
+          s.username == (data['username'] ?? '') &&
+          s.sshPort == (data['sshPort'] ?? 22));
+      if (!exists) {
+        final server = ServerConfig(
+          id: DateTime.now().millisecondsSinceEpoch.toString() +
+              '_${added}',
+          name: data['name'] ?? 'Imported',
+          host: data['host'],
+          sshPort: data['sshPort'] ?? 22,
+          username: data['username'] ?? '',
+          socksPort: data['socksPort'] ?? 1080,
+          authType: data['authType'] ?? 'password',
+        );
+        servers.add(server);
+        _saveSecrets(server);
+        added++;
+      }
+    }
+    if (added > 0) {
+      _saveServers();
+      _log('System', 'info', 'Imported $added new server(s)');
+      notifyListeners();
+    }
+    return added;
+  }
+
   // ─── SOCKS5 Tunnel ───────────────────────────────────────────────
 
   Future<void> connectTunnel(ServerConfig server) async {
     if (_clients.containsKey(server.id)) return;
     try {
-      _log(server.name, 'info', 'Connecting to ${server.host}:${server.sshPort}...');
+      _log(server.name, 'info',
+          'Connecting to ${server.host}:${server.sshPort}...');
 
       final socket = await SSHSocket.connect(server.host, server.sshPort,
           timeout: const Duration(seconds: 15));
 
       final SSHClient client;
-      if (server.authType == 'key' && server.privateKey != null && server.privateKey!.isNotEmpty) {
+      if (server.authType == 'key' &&
+          server.privateKey != null &&
+          server.privateKey!.isNotEmpty) {
+        final passphrase =
+            (server.keyPassphrase != null && server.keyPassphrase!.isNotEmpty)
+                ? server.keyPassphrase
+                : null;
         client = SSHClient(
           socket,
           username: server.username,
-          identities: [...SSHKeyPair.fromPem(server.privateKey!)],
+          identities: [
+            ...SSHKeyPair.fromPem(server.privateKey!, passphrase)
+          ],
         );
       } else {
         client = SSHClient(
@@ -148,16 +215,26 @@ class ProxyService extends ChangeNotifier {
       }
 
       await client.authenticated;
-      _log(server.name, 'connected', 'SSH authenticated (${server.authType})');
+      _log(server.name, 'connected',
+          'SSH authenticated (${server.authType})');
 
       // Bind local SOCKS5 server
       final serverSocket =
           await ServerSocket.bind(InternetAddress.anyIPv4, server.socksPort);
       _serverSockets[server.id] = serverSocket;
 
+      final tunnel = ActiveTunnel(
+        serverId: server.id,
+        serverName: server.name,
+        socksPort: server.socksPort,
+        startedAt: DateTime.now(),
+        proxyType: 'SOCKS5',
+        authType: 'no-auth',
+      );
+
       serverSocket.listen(
         (Socket localSocket) {
-          _handleSocksConnection(localSocket, client, server.name);
+          _handleSocksConnection(localSocket, client, server.name, tunnel);
         },
         onError: (e) {
           _log(server.name, 'error', 'ServerSocket error: $e');
@@ -169,16 +246,10 @@ class ProxyService extends ChangeNotifier {
       await _saveServers();
 
       activeTunnels.removeWhere((t) => t.serverId == server.id);
-      activeTunnels.add(ActiveTunnel(
-        serverId: server.id,
-        serverName: server.name,
-        socksPort: server.socksPort,
-        startedAt: DateTime.now(),
-        proxyType: 'SOCKS5',
-        authType: 'no-auth',
-      ));
+      activeTunnels.add(tunnel);
       _log(server.name, 'connected',
           'SOCKS5 proxy listening on 0.0.0.0:${server.socksPort}');
+      _notifyTunnelCount();
       notifyListeners();
     } catch (e) {
       _log(server.name, 'error', 'Connection failed: $e');
@@ -187,8 +258,8 @@ class ProxyService extends ChangeNotifier {
   }
 
   /// Handle a single SOCKS5 client connection.
-  Future<void> _handleSocksConnection(
-      Socket localSocket, SSHClient client, String serverName) async {
+  Future<void> _handleSocksConnection(Socket localSocket, SSHClient client,
+      String serverName, ActiveTunnel tunnel) async {
     final greetingCompleter = Completer<Uint8List>();
     final requestCompleter = Completer<Uint8List>();
     SSHForwardChannel? forwardChannel;
@@ -205,6 +276,7 @@ class ProxyService extends ChangeNotifier {
         } else {
           // Phase 2: forward data to SSH channel
           try {
+            tunnel.bytesOut += data.length;
             forwardChannel?.sink.add(data);
           } catch (_) {}
         }
@@ -272,8 +344,7 @@ class ProxyService extends ChangeNotifier {
           localSocket.destroy();
           return;
         }
-        targetHost =
-            String.fromCharCodes(request.sublist(5, 5 + domainLen));
+        targetHost = String.fromCharCodes(request.sublist(5, 5 + domainLen));
         targetPort =
             (request[5 + domainLen] << 8) | request[6 + domainLen];
       } else if (addrType == 0x04) {
@@ -283,9 +354,13 @@ class ProxyService extends ChangeNotifier {
           return;
         }
         final bytes = request.sublist(4, 20);
-        targetHost = bytes
-            .map((b) => b.toRadixString(16).padLeft(2, '0'))
-            .join(':');
+        // Format as proper IPv6 (pairs of bytes as hex groups)
+        final groups = <String>[];
+        for (int i = 0; i < 16; i += 2) {
+          groups.add(
+              ((bytes[i] << 8) | bytes[i + 1]).toRadixString(16));
+        }
+        targetHost = groups.join(':');
         targetPort = (request[20] << 8) | request[21];
       } else {
         // Address type not supported
@@ -306,6 +381,7 @@ class ProxyService extends ChangeNotifier {
       forwardChannel.stream.listen(
         (data) {
           try {
+            tunnel.bytesIn += data.length;
             localSocket.add(data);
           } catch (_) {}
         },
@@ -351,6 +427,7 @@ class ProxyService extends ChangeNotifier {
         _log(tunnel.serverName, 'disconnected');
       }
     }
+    _notifyTunnelCount();
     notifyListeners();
   }
 
@@ -365,7 +442,25 @@ class ProxyService extends ChangeNotifier {
     for (final tunnel in List<ActiveTunnel>.from(activeTunnels)) {
       if (tunnel.isExternal) continue;
       final client = _clients[tunnel.serverId];
-      final needsReconnect = client == null || client.isClosed;
+
+      // Check SSH connection state (not just port listening)
+      bool needsReconnect = false;
+      if (client == null || client.isClosed) {
+        needsReconnect = true;
+      } else {
+        // Verify SSH session is still alive by checking if we can execute
+        try {
+          // dartssh2 SSHClient.isClosed is the best indicator we have.
+          // Also verify the server socket is still bound.
+          final serverSocket = _serverSockets[tunnel.serverId];
+          if (serverSocket == null) {
+            needsReconnect = true;
+          }
+        } catch (_) {
+          needsReconnect = true;
+        }
+      }
+
       if (needsReconnect) {
         try {
           final server =
@@ -375,9 +470,15 @@ class ProxyService extends ChangeNotifier {
             disconnectTunnel(server.id);
             await Future.delayed(const Duration(seconds: 2));
             await connectTunnel(server);
-            tunnel.restartCount++;
+            // Find the new tunnel and update restart count
+            final newTunnel = activeTunnels
+                .where((t) => t.serverId == server.id)
+                .firstOrNull;
+            if (newTunnel != null) {
+              newTunnel.restartCount = tunnel.restartCount + 1;
+            }
             _log(server.name, 'reconnected',
-                'Restart #${tunnel.restartCount}');
+                'Restart #${tunnel.restartCount + 1}');
           }
         } catch (e) {
           _log(tunnel.serverName, 'error', 'Reconnect failed: $e');

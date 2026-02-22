@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -10,7 +11,19 @@ void main() async {
   await initializeBackgroundService();
   runApp(
     ChangeNotifierProvider(
-      create: (_) => ProxyService(),
+      create: (_) {
+        final svc = ProxyService();
+        // Wire up notification updates when tunnel count changes
+        svc.onTunnelCountChanged = (count) {
+          final service = FlutterBackgroundService();
+          service.invoke('updateNotification', {
+            'content': count > 0
+                ? '$count tunnel${count == 1 ? '' : 's'} active'
+                : 'No active tunnels',
+          });
+        };
+        return svc;
+      },
       child: const MyApp(),
     ),
   );
@@ -25,7 +38,7 @@ Future<void> initializeBackgroundService() async {
       isForegroundMode: true,
       notificationChannelId: 'ssh_proxy_channel',
       initialNotificationTitle: 'SSH Proxy Manager',
-      initialNotificationContent: 'Starting...',
+      initialNotificationContent: 'Initializing...',
       foregroundServiceNotificationId: 888,
       autoStartOnBoot: true,
     ),
@@ -40,25 +53,32 @@ Future<void> initializeBackgroundService() async {
 
 @pragma('vm:entry-point')
 Future<bool> onIosBackground(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
   return true;
 }
 
 @pragma('vm:entry-point')
 void onBackgroundServiceStart(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
+
+  if (service is AndroidServiceInstance) {
+    service.setAsForegroundService();
+
+    service.on('updateNotification').listen((data) {
+      if (data != null) {
+        service.setForegroundNotificationInfo(
+          title: 'SSH Proxy Manager',
+          content: data['content'] ?? 'Running',
+        );
+      }
+    });
+  }
+
   service.on('stop').listen((_) {
     service.stopSelf();
   });
 
-  service.on('updateNotification').listen((data) {
-    if (data != null) {
-      service.invoke('setNotificationInfo', {
-        'title': 'SSH Proxy Manager',
-        'content': data['content'] ?? 'Running',
-      });
-    }
-  });
-
-  // Keep alive timer
+  // Keep alive timer — periodically signal that service is alive
   Timer.periodic(const Duration(seconds: 30), (timer) {
     service.invoke('healthCheck');
   });
