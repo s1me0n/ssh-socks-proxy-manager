@@ -8,7 +8,14 @@ import 'services/proxy_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await initializeBackgroundService();
+  try {
+    await initializeBackgroundService();
+  } catch (e) {
+    debugPrint('Background service init failed: $e');
+    // Don't crash the app if the background service fails to initialize.
+    // The app is still functional without it — tunnels work, just no
+    // persistent notification / boot auto-start.
+  }
   runApp(
     ChangeNotifierProvider(
       create: (_) {
@@ -34,7 +41,7 @@ Future<void> initializeBackgroundService() async {
   await service.configure(
     androidConfiguration: AndroidConfiguration(
       onStart: onBackgroundServiceStart,
-      autoStart: true,
+      autoStart: false,
       isForegroundMode: true,
       notificationChannelId: 'ssh_proxy_channel',
       initialNotificationTitle: 'SSH Proxy Manager',

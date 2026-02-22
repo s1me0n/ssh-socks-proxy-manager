@@ -26,7 +26,9 @@ class ProxyService extends ChangeNotifier {
   Timer? _healthCheckTimer;
   StreamSubscription? _connectivitySub;
   late final LocalApiServer _apiServer;
-  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
 
   /// Callback for updating background service notification.
   void Function(int activeTunnelCount)? onTunnelCountChanged;
@@ -64,20 +66,32 @@ class ProxyService extends ChangeNotifier {
   // ─── Server persistence ───────────────────────────────────────────
 
   Future<void> _loadServers() async {
-    final prefs = await SharedPreferences.getInstance();
-    final data = prefs.getStringList('servers') ?? [];
-    servers = data.map((s) => ServerConfig.fromJson(jsonDecode(s))).toList();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final data = prefs.getStringList('servers') ?? [];
+      servers = data.map((s) => ServerConfig.fromJson(jsonDecode(s))).toList();
 
-    // Load secrets from secure storage
-    for (final s in servers) {
-      s.password = await _secureStorage.read(key: 'password_${s.id}') ?? '';
-      s.privateKey = await _secureStorage.read(key: 'privateKey_${s.id}');
-      s.keyPassphrase =
-          await _secureStorage.read(key: 'keyPassphrase_${s.id}');
+      // Load secrets from secure storage
+      for (final s in servers) {
+        try {
+          s.password =
+              await _secureStorage.read(key: 'password_${s.id}') ?? '';
+          s.privateKey =
+              await _secureStorage.read(key: 'privateKey_${s.id}');
+          s.keyPassphrase =
+              await _secureStorage.read(key: 'keyPassphrase_${s.id}');
+        } catch (e) {
+          debugPrint('Failed to read secrets for ${s.id}: $e');
+          // Continue with empty credentials — user can re-enter them
+        }
+      }
+
+      notifyListeners();
+      _reconnectEnabledTunnels();
+    } catch (e) {
+      debugPrint('Failed to load servers: $e');
+      _log('System', 'error', 'Failed to load servers: $e');
     }
-
-    notifyListeners();
-    _reconnectEnabledTunnels();
   }
 
   Future<void> _saveServers() async {
@@ -87,25 +101,33 @@ class ProxyService extends ChangeNotifier {
   }
 
   Future<void> _saveSecrets(ServerConfig s) async {
-    await _secureStorage.write(key: 'password_${s.id}', value: s.password);
-    if (s.privateKey != null) {
-      await _secureStorage.write(
-          key: 'privateKey_${s.id}', value: s.privateKey!);
-    } else {
-      await _secureStorage.delete(key: 'privateKey_${s.id}');
-    }
-    if (s.keyPassphrase != null && s.keyPassphrase!.isNotEmpty) {
-      await _secureStorage.write(
-          key: 'keyPassphrase_${s.id}', value: s.keyPassphrase!);
-    } else {
-      await _secureStorage.delete(key: 'keyPassphrase_${s.id}');
+    try {
+      await _secureStorage.write(key: 'password_${s.id}', value: s.password);
+      if (s.privateKey != null) {
+        await _secureStorage.write(
+            key: 'privateKey_${s.id}', value: s.privateKey!);
+      } else {
+        await _secureStorage.delete(key: 'privateKey_${s.id}');
+      }
+      if (s.keyPassphrase != null && s.keyPassphrase!.isNotEmpty) {
+        await _secureStorage.write(
+            key: 'keyPassphrase_${s.id}', value: s.keyPassphrase!);
+      } else {
+        await _secureStorage.delete(key: 'keyPassphrase_${s.id}');
+      }
+    } catch (e) {
+      debugPrint('Failed to save secrets for ${s.id}: $e');
     }
   }
 
   Future<void> _deleteSecrets(String id) async {
-    await _secureStorage.delete(key: 'password_$id');
-    await _secureStorage.delete(key: 'privateKey_$id');
-    await _secureStorage.delete(key: 'keyPassphrase_$id');
+    try {
+      await _secureStorage.delete(key: 'password_$id');
+      await _secureStorage.delete(key: 'privateKey_$id');
+      await _secureStorage.delete(key: 'keyPassphrase_$id');
+    } catch (e) {
+      debugPrint('Failed to delete secrets for $id: $e');
+    }
   }
 
   void addServer(ServerConfig s) {
