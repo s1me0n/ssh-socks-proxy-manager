@@ -10,6 +10,8 @@ permissions: write-all
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Sofia
     steps:
       - uses: actions/checkout@v4
       
@@ -38,12 +40,15 @@ jobs:
           name: ssh-proxy-release
           path: build/app/outputs/flutter-apk/app-release.apk
       
+      - name: Set build time
+        run: echo "BUILD_TIME=$(date '+%Y-%m-%d %H:%M %Z')" >> $GITHUB_ENV
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         if: github.ref == 'refs/heads/main'
         with:
           tag_name: v${{ github.run_number }}
-          name: "SSH Proxy Manager v${{ github.run_number }}"
+          name: "SSH Proxy Manager v${{ github.run_number }} (${{ env.BUILD_TIME }})"
           files: build/app/outputs/flutter-apk/app-release.apk
           generate_release_notes: true
         env:
