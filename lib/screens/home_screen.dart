@@ -26,8 +26,15 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _resolveApiAddress() async {
     try {
       final proxyService = Provider.of<ProxyService>(context, listen: false);
-      // Ensure API server is running (idempotent — won't double-bind)
+      // Ensure API server is running (idempotent — uses mutex inside)
       await proxyService.startApiServer();
+      // Wait for the API server to be actually ready (bound and listening)
+      await proxyService.apiReady.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () {
+          debugPrint('⚠️ HomeScreen: API ready timeout — using defaults');
+        },
+      );
       final ip = await LocalApiServer.getLocalIp();
       final port = proxyService.apiServer?.activePort ?? LocalApiServer.port;
       if (mounted) {

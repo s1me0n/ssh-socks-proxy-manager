@@ -10,8 +10,13 @@ class LocalApiServer {
   HttpServer? _server;
   final ProxyService proxyService;
   static const int port = 7070;
+  static const int _fallbackPort = 7071;
+  static const int _maxRetries = 5;
+  static const Duration _retryDelay = Duration(seconds: 2);
   int? _activePort;
   bool _running = false;
+  Completer<void>? _startCompleter;
+  DateTime? _startTime;
 
   /// Returns the port the server is actually listening on (or null).
   int? get activePort => _activePort;
@@ -19,52 +24,99 @@ class LocalApiServer {
   /// Whether the server is currently running.
   bool get isRunning => _running;
 
+  /// Callback fired when server is ready (port is bound and listening).
+  void Function(int port)? onReady;
+
   LocalApiServer(this.proxyService);
 
+  /// Start the API server with retry logic and mutex protection.
+  /// Safe to call concurrently — only the first call does actual work;
+  /// subsequent calls await the same Future.
   Future<void> start() async {
     if (_running) {
       debugPrint('⚠️ API server already running on port $_activePort, skipping duplicate start');
       return;
     }
-    debugPrint('🔌 Starting API server on 0.0.0.0:$port...');
+
+    // Mutex: if another start() is already in progress, wait for it
+    if (_startCompleter != null && !_startCompleter!.isCompleted) {
+      debugPrint('⏳ API server start already in progress, waiting...');
+      await _startCompleter!.future;
+      return;
+    }
+
+    _startCompleter = Completer<void>();
     try {
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, port,
-          shared: true);
-      _activePort = port;
-      _running = true;
-      debugPrint('✅ API server started successfully on port $port');
-      final ip = await getLocalIp();
-      debugPrint('🌐 Device IP: $ip — access via http://$ip:$port');
-      debugPrint('🌐 Termux: curl http://127.0.0.1:$port/help');
-      _server!.listen(_handleRequest,
-          onError: (e) => debugPrint('❌ API stream error: $e'),
-          onDone: () {
-            debugPrint('⚠️ API server stream closed on port $_activePort');
-            _running = false;
-          });
-    } catch (e, st) {
-      debugPrint('❌ Failed to start API server on $port: $e');
-      debugPrint('❌ Stack trace: $st');
+      await _startWithRetry();
+      _startCompleter!.complete();
+    } catch (e) {
+      _startCompleter!.completeError(e);
+      _startCompleter = null;
+      rethrow;
+    }
+  }
+
+  /// Internal: attempt to bind with retries on both primary and fallback ports.
+  Future<void> _startWithRetry() async {
+    for (int attempt = 1; attempt <= _maxRetries; attempt++) {
+      // Try primary port
+      try {
+        debugPrint('🔌 Starting API server on 0.0.0.0:$port (attempt $attempt/$_maxRetries)...');
+        _server = await HttpServer.bind(InternetAddress.anyIPv4, port,
+            shared: true);
+        _activePort = port;
+        _running = true;
+        _attachListener();
+        await _logSuccess();
+        return;
+      } catch (e) {
+        debugPrint('❌ Failed to bind port $port (attempt $attempt): $e');
+      }
+
       // Try fallback port
       try {
-        debugPrint('🔌 Trying fallback port 7071...');
-        _server = await HttpServer.bind(InternetAddress.anyIPv4, 7071,
+        debugPrint('🔌 Trying fallback port $_fallbackPort (attempt $attempt/$_maxRetries)...');
+        _server = await HttpServer.bind(InternetAddress.anyIPv4, _fallbackPort,
             shared: true);
-        _activePort = 7071;
+        _activePort = _fallbackPort;
         _running = true;
-        debugPrint('✅ API server started on fallback port 7071');
-        _server!.listen(_handleRequest,
-            onError: (e) => debugPrint('❌ API stream error: $e'),
-            onDone: () {
-              debugPrint('⚠️ API server stream closed on port $_activePort');
-              _running = false;
-            });
-      } catch (e2, st2) {
-        debugPrint('❌ API server completely failed: $e2');
-        debugPrint('❌ Stack trace: $st2');
-        _running = false;
+        _attachListener();
+        await _logSuccess();
+        return;
+      } catch (e) {
+        debugPrint('❌ Failed to bind port $_fallbackPort (attempt $attempt): $e');
+      }
+
+      // Wait before retrying (except on last attempt)
+      if (attempt < _maxRetries) {
+        debugPrint('⏳ Retrying in ${_retryDelay.inSeconds}s...');
+        await Future.delayed(_retryDelay);
       }
     }
+
+    debugPrint('❌ API server completely failed after $_maxRetries attempts');
+    _running = false;
+  }
+
+  void _attachListener() {
+    _server!.listen(_handleRequest,
+        onError: (e) => debugPrint('❌ API stream error: $e'),
+        onDone: () {
+          debugPrint('⚠️ API server stream closed on port $_activePort');
+          _running = false;
+          _startCompleter = null; // Allow restart
+        });
+  }
+
+  Future<void> _logSuccess() async {
+    _startTime = DateTime.now();
+    final p = _activePort ?? port;
+    debugPrint('✅ API server started successfully on port $p');
+    final ip = await getLocalIp();
+    debugPrint('🌐 Device IP: $ip — access via http://$ip:$p');
+    debugPrint('🌐 Termux: curl http://127.0.0.1:$p/help');
+    // Notify listeners (e.g. ProxyService → background notification)
+    onReady?.call(p);
   }
 
   Future<void> stop() async {
@@ -77,6 +129,8 @@ class LocalApiServer {
     _server = null;
     _activePort = null;
     _running = false;
+    _startTime = null;
+    _startCompleter = null;
   }
 
   /// Get the API listen address for display.
@@ -118,10 +172,20 @@ class LocalApiServer {
     final method = req.method;
 
     try {
-      if (path == '/status' && method == 'GET') {
+      // Lightweight readiness probe — returns instantly, minimal payload.
+      // Termux can use: while ! curl -sf localhost:7070/ping; do sleep 1; done
+      if (path == '/ping' && method == 'GET') {
+        req.response.write(jsonEncode({
+          'pong': true,
+          'port': _activePort ?? port,
+          'uptime': _startTime != null
+              ? DateTime.now().difference(_startTime!).inSeconds
+              : 0,
+        }));
+      } else if (path == '/status' && method == 'GET') {
         req.response.write(jsonEncode({
           'status': 'running',
-          'version': '3.0.0',
+          'version': '3.1.0',
           'servers': proxyService.servers
               .map((s) => {
                     'id': s.id,
@@ -317,6 +381,7 @@ class LocalApiServer {
           'api': 'SSH Proxy Manager API v3',
           'port': _activePort ?? port,
           'endpoints': [
+            'GET  /ping               — readiness probe (lightweight)',
             'GET  /status              — full status',
             'GET  /tunnels             — active tunnels',
             'GET  /servers             — saved servers',
@@ -333,6 +398,8 @@ class LocalApiServer {
             'POST /import             — import/merge servers (JSON body)',
           ],
           'termux_examples': [
+            '# Wait for API ready:',
+            'while ! curl -sf localhost:${_activePort ?? port}/ping; do sleep 1; done',
             'curl localhost:${_activePort ?? port}/status',
             'curl -X POST -H "Content-Type: application/json" -d \'{"name":"My Server","host":"1.2.3.4","username":"root","password":"pass"}\' localhost:${_activePort ?? port}/servers/add',
             'curl -X POST localhost:${_activePort ?? port}/connect/{serverId}',

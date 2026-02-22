@@ -26,15 +26,24 @@ void main() async {
     ChangeNotifierProvider(
       create: (_) {
         final svc = ProxyService();
+        final bgService = FlutterBackgroundService();
+
         // Wire up notification updates when tunnel count changes
         svc.onTunnelCountChanged = (count) {
-          final service = FlutterBackgroundService();
-          service.invoke('updateNotification', {
+          bgService.invoke('updateNotification', {
             'content': count > 0
                 ? '$count tunnel${count == 1 ? '' : 's'} active'
-                : 'No active tunnels',
+                : 'No active tunnels — API ready',
           });
         };
+
+        // Wire up notification updates for API server readiness
+        svc.onNotificationUpdate = (content) {
+          bgService.invoke('updateNotification', {
+            'content': content,
+          });
+        };
+
         return svc;
       },
       child: const MyApp(),

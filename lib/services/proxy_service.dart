@@ -34,8 +34,16 @@ class ProxyService extends ChangeNotifier {
   /// Callback for updating background service notification.
   void Function(int activeTunnelCount)? onTunnelCountChanged;
 
+  /// Callback for updating notification with arbitrary content.
+  void Function(String content)? onNotificationUpdate;
+
   /// Public access to the API server instance.
   LocalApiServer? get apiServer => _apiServer;
+
+  /// Future that completes when the API server is ready.
+  /// Allows callers to await API readiness.
+  Future<void> get apiReady => _apiReadyCompleter.future;
+  final Completer<void> _apiReadyCompleter = Completer<void>();
 
   ProxyService() {
     _loadServers();
@@ -50,22 +58,42 @@ class ProxyService extends ChangeNotifier {
   Future<void> _initApiServer() async {
     try {
       _apiServer = LocalApiServer(this);
+      _apiServer!.onReady = (port) {
+        _log('System', 'info', 'API server ready on port $port');
+        // Update notification to show API is ready
+        onNotificationUpdate?.call('API ready on port $port');
+        if (!_apiReadyCompleter.isCompleted) {
+          _apiReadyCompleter.complete();
+        }
+      };
       await _apiServer!.start();
       debugPrint('✅ ProxyService: API server initialized');
     } catch (e) {
       debugPrint('❌ ProxyService: API server init error: $e');
+      if (!_apiReadyCompleter.isCompleted) {
+        _apiReadyCompleter.completeError(e);
+      }
     }
   }
 
   /// Start or restart the API server. Safe to call multiple times.
+  /// Uses the same mutex inside LocalApiServer.start() so concurrent
+  /// calls are safe — they just await the in-progress start.
   Future<void> startApiServer() async {
     try {
       if (_apiServer == null) {
         _apiServer = LocalApiServer(this);
+        _apiServer!.onReady = (port) {
+          _log('System', 'info', 'API server ready on port $port');
+          onNotificationUpdate?.call('API ready on port $port');
+          if (!_apiReadyCompleter.isCompleted) {
+            _apiReadyCompleter.complete();
+          }
+        };
       }
-      if (!_apiServer!.isRunning) {
-        await _apiServer!.start();
-      }
+      // start() has its own mutex — safe to call even if _initApiServer()
+      // is already in progress. It will await the existing start.
+      await _apiServer!.start();
     } catch (e) {
       debugPrint('❌ ProxyService.startApiServer error: $e');
     }
