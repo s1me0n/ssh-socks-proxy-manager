@@ -1,8 +1,8 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'servers_tab.dart';
 import 'active_tunnels_tab.dart';
+import 'logs_tab.dart';
 import '../services/local_api_server.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -34,6 +34,7 @@ class _HomeScreenState extends State<HomeScreen> {
       body: [
         ServersTab(apiAddress: _apiAddress),
         ActiveTunnelsTab(apiAddress: _apiAddress),
+        const LogsTab(),
       ][_index],
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
@@ -41,6 +42,8 @@ class _HomeScreenState extends State<HomeScreen> {
         destinations: const [
           NavigationDestination(icon: Icon(Icons.dns), label: 'Servers'),
           NavigationDestination(icon: Icon(Icons.router), label: 'Active'),
+          NavigationDestination(
+              icon: Icon(Icons.article), label: 'Logs'),
         ],
       ),
     );

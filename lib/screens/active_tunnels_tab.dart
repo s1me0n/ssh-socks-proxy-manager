@@ -52,7 +52,31 @@ class ActiveTunnelsTab extends StatelessWidget {
         ],
       ),
       body: Column(children: [
-        if (svc.isScanning) const LinearProgressIndicator(),
+        if (svc.isScanning)
+          Column(
+            children: [
+              LinearProgressIndicator(value: svc.scanProgress),
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Scanning port ${svc.scannedPorts} / 65535',
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.grey),
+                    ),
+                    Text(
+                      '${(svc.scanProgress * 100).toStringAsFixed(1)}%',
+                      style: const TextStyle(
+                          fontSize: 11, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         Expanded(
           child: svc.activeTunnels.isEmpty && !svc.isScanning
               ? const Center(

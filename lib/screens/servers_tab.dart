@@ -58,11 +58,16 @@ class ServersTab extends StatelessWidget {
                     leading: CircleAvatar(
                       backgroundColor:
                           isActive ? Colors.green : Colors.grey.shade700,
-                      child: const Icon(Icons.dns, color: Colors.white),
+                      child: Icon(
+                          s.authType == 'key'
+                              ? Icons.vpn_key
+                              : Icons.dns,
+                          color: Colors.white),
                     ),
                     title: Text(s.name),
                     subtitle: Text(
-                        '${s.username}@${s.host}:${s.sshPort}  →  SOCKS :${s.socksPort}'),
+                        '${s.username}@${s.host}:${s.sshPort}  →  SOCKS :${s.socksPort}'
+                        '  (${s.authType == 'key' ? 'key' : 'pass'})'),
                     trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [

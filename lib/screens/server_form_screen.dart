@@ -13,8 +13,9 @@ class ServerFormScreen extends StatefulWidget {
 class _ServerFormScreenState extends State<ServerFormScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _name, _host, _sshPort, _username,
-      _password, _socksPort;
+      _password, _socksPort, _privateKey;
   bool _obscurePassword = true;
+  late String _authType;
 
   @override
   void initState() {
@@ -26,6 +27,20 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     _username = TextEditingController(text: s?.username ?? '');
     _password = TextEditingController(text: s?.password ?? '');
     _socksPort = TextEditingController(text: '${s?.socksPort ?? 1080}');
+    _privateKey = TextEditingController(text: s?.privateKey ?? '');
+    _authType = s?.authType ?? 'password';
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _host.dispose();
+    _sshPort.dispose();
+    _username.dispose();
+    _password.dispose();
+    _socksPort.dispose();
+    _privateKey.dispose();
+    super.dispose();
   }
 
   @override
@@ -35,86 +50,135 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
       appBar: AppBar(title: Text(isEdit ? 'Edit Server' : 'Add Server')),
       body: Form(
         key: _formKey,
-        child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              TextFormField(
-                  controller: _name,
-                  decoration: const InputDecoration(
-                      labelText: 'Name', prefixIcon: Icon(Icons.label)),
-                  validator: (v) => v!.isEmpty ? 'Required' : null),
-              const SizedBox(height: 12),
-              TextFormField(
-                  controller: _host,
-                  decoration: const InputDecoration(
-                      labelText: 'Host / IP',
-                      prefixIcon: Icon(Icons.computer)),
-                  validator: (v) => v!.isEmpty ? 'Required' : null),
-              const SizedBox(height: 12),
-              Row(children: [
-                Expanded(
-                    child: TextFormField(
-                        controller: _sshPort,
-                        decoration: const InputDecoration(
-                            labelText: 'SSH Port',
-                            prefixIcon: Icon(Icons.settings_ethernet)),
-                        keyboardType: TextInputType.number)),
-                const SizedBox(width: 12),
-                Expanded(
-                    child: TextFormField(
-                        controller: _socksPort,
-                        decoration: const InputDecoration(
-                            labelText: 'SOCKS Port',
-                            prefixIcon: Icon(Icons.router)),
-                        keyboardType: TextInputType.number)),
-              ]),
-              const SizedBox(height: 12),
-              TextFormField(
-                  controller: _username,
-                  decoration: const InputDecoration(
-                      labelText: 'Username',
-                      prefixIcon: Icon(Icons.person)),
-                  validator: (v) => v!.isEmpty ? 'Required' : null),
-              const SizedBox(height: 12),
-              TextFormField(
-                  controller: _password,
-                  obscureText: _obscurePassword,
-                  decoration: InputDecoration(
-                      labelText: 'Password',
-                      prefixIcon: const Icon(Icons.lock),
-                      suffixIcon: IconButton(
-                        icon: Icon(_obscurePassword
-                            ? Icons.visibility
-                            : Icons.visibility_off),
-                        onPressed: () => setState(
-                            () => _obscurePassword = !_obscurePassword),
-                      ))),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                icon: Icon(isEdit ? Icons.save : Icons.add),
-                label: Text(isEdit ? 'Save Changes' : 'Add Server'),
-                onPressed: () {
-                  if (!_formKey.currentState!.validate()) return;
-                  final svc = context.read<ProxyService>();
-                  final cfg = ServerConfig(
-                    id: widget.server?.id ??
-                        DateTime.now().millisecondsSinceEpoch.toString(),
-                    name: _name.text,
-                    host: _host.text,
-                    sshPort: int.tryParse(_sshPort.text) ?? 22,
-                    username: _username.text,
-                    password: _password.text,
-                    socksPort: int.tryParse(_socksPort.text) ?? 1080,
-                  );
-                  if (isEdit) {
-                    svc.updateServer(cfg);
-                  } else {
-                    svc.addServer(cfg);
-                  }
-                  Navigator.pop(context);
-                },
+        child: ListView(padding: const EdgeInsets.all(16), children: [
+          TextFormField(
+              controller: _name,
+              decoration: const InputDecoration(
+                  labelText: 'Name', prefixIcon: Icon(Icons.label)),
+              validator: (v) => v!.isEmpty ? 'Required' : null),
+          const SizedBox(height: 12),
+          TextFormField(
+              controller: _host,
+              decoration: const InputDecoration(
+                  labelText: 'Host / IP',
+                  prefixIcon: Icon(Icons.computer)),
+              validator: (v) => v!.isEmpty ? 'Required' : null),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(
+                child: TextFormField(
+                    controller: _sshPort,
+                    decoration: const InputDecoration(
+                        labelText: 'SSH Port',
+                        prefixIcon: Icon(Icons.settings_ethernet)),
+                    keyboardType: TextInputType.number)),
+            const SizedBox(width: 12),
+            Expanded(
+                child: TextFormField(
+                    controller: _socksPort,
+                    decoration: const InputDecoration(
+                        labelText: 'SOCKS Port',
+                        prefixIcon: Icon(Icons.router)),
+                    keyboardType: TextInputType.number)),
+          ]),
+          const SizedBox(height: 12),
+          TextFormField(
+              controller: _username,
+              decoration: const InputDecoration(
+                  labelText: 'Username',
+                  prefixIcon: Icon(Icons.person)),
+              validator: (v) => v!.isEmpty ? 'Required' : null),
+          const SizedBox(height: 16),
+
+          // ─── Auth type selector ───────────────────────────────
+          const Text('Authentication',
+              style: TextStyle(fontSize: 13, color: Colors.grey)),
+          const SizedBox(height: 8),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(
+                  value: 'password',
+                  label: Text('Password'),
+                  icon: Icon(Icons.lock)),
+              ButtonSegment(
+                  value: 'key',
+                  label: Text('SSH Key'),
+                  icon: Icon(Icons.vpn_key)),
+            ],
+            selected: {_authType},
+            onSelectionChanged: (v) =>
+                setState(() => _authType = v.first),
+          ),
+          const SizedBox(height: 12),
+
+          // ─── Password field ───────────────────────────────────
+          if (_authType == 'password')
+            TextFormField(
+                controller: _password,
+                obscureText: _obscurePassword,
+                decoration: InputDecoration(
+                    labelText: 'Password',
+                    prefixIcon: const Icon(Icons.lock),
+                    suffixIcon: IconButton(
+                      icon: Icon(_obscurePassword
+                          ? Icons.visibility
+                          : Icons.visibility_off),
+                      onPressed: () => setState(
+                          () => _obscurePassword = !_obscurePassword),
+                    ))),
+
+          // ─── Private key field ────────────────────────────────
+          if (_authType == 'key')
+            TextFormField(
+              controller: _privateKey,
+              maxLines: 8,
+              style: const TextStyle(
+                  fontFamily: 'monospace', fontSize: 12),
+              decoration: const InputDecoration(
+                labelText: 'Private Key (PEM)',
+                alignLabelWithHint: true,
+                prefixIcon: Icon(Icons.vpn_key),
+                hintText:
+                    '-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----',
+                hintStyle: TextStyle(fontSize: 11),
+                border: OutlineInputBorder(),
               ),
-            ]),
+              validator: (v) {
+                if (_authType == 'key' && (v == null || v.isEmpty)) {
+                  return 'Private key is required for SSH key auth';
+                }
+                return null;
+              },
+            ),
+          const SizedBox(height: 24),
+          FilledButton.icon(
+            icon: Icon(isEdit ? Icons.save : Icons.add),
+            label: Text(isEdit ? 'Save Changes' : 'Add Server'),
+            onPressed: () {
+              if (!_formKey.currentState!.validate()) return;
+              final svc = context.read<ProxyService>();
+              final cfg = ServerConfig(
+                id: widget.server?.id ??
+                    DateTime.now().millisecondsSinceEpoch.toString(),
+                name: _name.text,
+                host: _host.text,
+                sshPort: int.tryParse(_sshPort.text) ?? 22,
+                username: _username.text,
+                password: _authType == 'password' ? _password.text : '',
+                socksPort: int.tryParse(_socksPort.text) ?? 1080,
+                authType: _authType,
+                privateKey:
+                    _authType == 'key' ? _privateKey.text : null,
+              );
+              if (isEdit) {
+                svc.updateServer(cfg);
+              } else {
+                svc.addServer(cfg);
+              }
+              Navigator.pop(context);
+            },
+          ),
+        ]),
       ),
     );
   }
