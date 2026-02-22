@@ -16,28 +16,32 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _index = 0;
   String _apiAddress = 'localhost:7070';
-  LocalApiServer? _apiServer;
 
   @override
   void initState() {
     super.initState();
-    _startApiServer();
+    _resolveApiAddress();
   }
 
-  Future<void> _startApiServer() async {
-    final proxyService = Provider.of<ProxyService>(context, listen: false);
-    _apiServer = LocalApiServer(proxyService);
-    await _apiServer!.start();
-    final ip = await LocalApiServer.getLocalIp();
-    final port = _apiServer!.activePort ?? LocalApiServer.port;
-    if (mounted) {
-      setState(() => _apiAddress = '$ip:$port');
+  Future<void> _resolveApiAddress() async {
+    try {
+      final proxyService = Provider.of<ProxyService>(context, listen: false);
+      // Ensure API server is running (idempotent — won't double-bind)
+      await proxyService.startApiServer();
+      final ip = await LocalApiServer.getLocalIp();
+      final port = proxyService.apiServer?.activePort ?? LocalApiServer.port;
+      if (mounted) {
+        setState(() => _apiAddress = '$ip:$port');
+      }
+    } catch (e) {
+      debugPrint('❌ HomeScreen: API address resolve error: $e');
     }
   }
 
   @override
   void dispose() {
-    _apiServer?.stop();
+    // API server lifecycle is owned by ProxyService, NOT HomeScreen.
+    // Do NOT stop it here — it must survive widget rebuilds.
     super.dispose();
   }
 

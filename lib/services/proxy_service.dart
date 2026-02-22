@@ -26,7 +26,7 @@ class ProxyService extends ChangeNotifier {
   final Map<String, ServerSocket> _serverSockets = {};
   Timer? _healthCheckTimer;
   StreamSubscription? _connectivitySub;
-  late final LocalApiServer _apiServer;
+  LocalApiServer? _apiServer;
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
@@ -34,13 +34,41 @@ class ProxyService extends ChangeNotifier {
   /// Callback for updating background service notification.
   void Function(int activeTunnelCount)? onTunnelCountChanged;
 
+  /// Public access to the API server instance.
+  LocalApiServer? get apiServer => _apiServer;
+
   ProxyService() {
     _loadServers();
     _startHealthCheck();
     _listenNetworkChanges();
-    _apiServer = LocalApiServer(this);
-    _apiServer.start();
+    _initApiServer();
     _log('System', 'info', 'SSH Proxy Manager started');
+  }
+
+  /// Initialize and start the local REST API server.
+  /// Called once from constructor; safe to call again (idempotent).
+  Future<void> _initApiServer() async {
+    try {
+      _apiServer = LocalApiServer(this);
+      await _apiServer!.start();
+      debugPrint('✅ ProxyService: API server initialized');
+    } catch (e) {
+      debugPrint('❌ ProxyService: API server init error: $e');
+    }
+  }
+
+  /// Start or restart the API server. Safe to call multiple times.
+  Future<void> startApiServer() async {
+    try {
+      if (_apiServer == null) {
+        _apiServer = LocalApiServer(this);
+      }
+      if (!_apiServer!.isRunning) {
+        await _apiServer!.start();
+      }
+    } catch (e) {
+      debugPrint('❌ ProxyService.startApiServer error: $e');
+    }
   }
 
   // ─── Logging ──────────────────────────────────────────────────────
@@ -663,7 +691,7 @@ class ProxyService extends ChangeNotifier {
   void dispose() {
     _healthCheckTimer?.cancel();
     _connectivitySub?.cancel();
-    _apiServer.stop();
+    _apiServer?.stop();
     for (final c in _clients.values) {
       c.close();
     }

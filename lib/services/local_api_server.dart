@@ -11,44 +11,72 @@ class LocalApiServer {
   final ProxyService proxyService;
   static const int port = 7070;
   int? _activePort;
+  bool _running = false;
 
   /// Returns the port the server is actually listening on (or null).
   int? get activePort => _activePort;
 
+  /// Whether the server is currently running.
+  bool get isRunning => _running;
+
   LocalApiServer(this.proxyService);
 
   Future<void> start() async {
+    if (_running) {
+      debugPrint('⚠️ API server already running on port $_activePort, skipping duplicate start');
+      return;
+    }
+    debugPrint('🔌 Starting API server on 0.0.0.0:$port...');
     try {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, port,
           shared: true);
       _activePort = port;
-      debugPrint('🌐 API Server started on 0.0.0.0:$port');
-      debugPrint('🌐 API Server URL: http://0.0.0.0:$port');
+      _running = true;
+      debugPrint('✅ API server started successfully on port $port');
       final ip = await getLocalIp();
       debugPrint('🌐 Device IP: $ip — access via http://$ip:$port');
+      debugPrint('🌐 Termux: curl http://127.0.0.1:$port/help');
       _server!.listen(_handleRequest,
-          onError: (e) => debugPrint('API error: $e'));
-    } catch (e) {
-      debugPrint('Failed to start API server on $port: $e');
+          onError: (e) => debugPrint('❌ API stream error: $e'),
+          onDone: () {
+            debugPrint('⚠️ API server stream closed on port $_activePort');
+            _running = false;
+          });
+    } catch (e, st) {
+      debugPrint('❌ Failed to start API server on $port: $e');
+      debugPrint('❌ Stack trace: $st');
       // Try fallback port
       try {
+        debugPrint('🔌 Trying fallback port 7071...');
         _server = await HttpServer.bind(InternetAddress.anyIPv4, 7071,
             shared: true);
         _activePort = 7071;
-        debugPrint('🌐 API Server started on 0.0.0.0:7071 (fallback)');
-        debugPrint('🌐 API Server URL: http://0.0.0.0:7071');
+        _running = true;
+        debugPrint('✅ API server started on fallback port 7071');
         _server!.listen(_handleRequest,
-            onError: (e) => debugPrint('API error: $e'));
-      } catch (e2) {
-        debugPrint('API server completely failed: $e2');
+            onError: (e) => debugPrint('❌ API stream error: $e'),
+            onDone: () {
+              debugPrint('⚠️ API server stream closed on port $_activePort');
+              _running = false;
+            });
+      } catch (e2, st2) {
+        debugPrint('❌ API server completely failed: $e2');
+        debugPrint('❌ Stack trace: $st2');
+        _running = false;
       }
     }
   }
 
   Future<void> stop() async {
-    await _server?.close(force: true);
+    debugPrint('🛑 Stopping API server on port $_activePort...');
+    try {
+      await _server?.close(force: true);
+    } catch (e) {
+      debugPrint('❌ Error stopping API server: $e');
+    }
     _server = null;
     _activePort = null;
+    _running = false;
   }
 
   /// Get the API listen address for display.
@@ -93,7 +121,7 @@ class LocalApiServer {
       if (path == '/status' && method == 'GET') {
         req.response.write(jsonEncode({
           'status': 'running',
-          'version': '2.0.0',
+          'version': '3.0.0',
           'servers': proxyService.servers
               .map((s) => {
                     'id': s.id,
@@ -286,7 +314,7 @@ class LocalApiServer {
             {'success': true, 'message': 'All tunnels disconnected'}));
       } else if (path == '/help' && method == 'GET') {
         req.response.write(jsonEncode({
-          'api': 'SSH Proxy Manager API v2',
+          'api': 'SSH Proxy Manager API v3',
           'port': _activePort ?? port,
           'endpoints': [
             'GET  /status              — full status',
