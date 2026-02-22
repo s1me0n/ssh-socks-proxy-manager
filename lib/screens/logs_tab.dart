@@ -17,10 +17,7 @@ class LogsTab extends StatelessWidget {
             IconButton(
               icon: const Icon(Icons.delete_sweep),
               tooltip: 'Clear logs',
-              onPressed: () {
-                svc.logs.clear();
-                svc.notifyListeners();
-              },
+              onPressed: () => svc.clearLogs(),
             ),
         ],
       ),

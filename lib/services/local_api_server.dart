@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import '../models/server_config.dart';
+import '../utils/id_generator.dart';
 import 'proxy_service.dart';
 
 class LocalApiServer {
@@ -17,23 +19,24 @@ class LocalApiServer {
 
   Future<void> start() async {
     try {
-      _server =
-          await HttpServer.bind(InternetAddress.anyIPv4, port, shared: true);
+      _server = await HttpServer.bind(InternetAddress.loopbackIPv4, port,
+          shared: true);
       _activePort = port;
-      print('API server started on 0.0.0.0:$port');
-      _server!.listen(_handleRequest, onError: (e) => print('API error: $e'));
+      debugPrint('API server started on 127.0.0.1:$port');
+      _server!.listen(_handleRequest,
+          onError: (e) => debugPrint('API error: $e'));
     } catch (e) {
-      print('Failed to start API server on $port: $e');
+      debugPrint('Failed to start API server on $port: $e');
       // Try fallback port
       try {
-        _server = await HttpServer.bind(InternetAddress.anyIPv4, 7071,
+        _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 7071,
             shared: true);
         _activePort = 7071;
-        print('API server started on 0.0.0.0:7071 (fallback)');
-        _server!
-            .listen(_handleRequest, onError: (e) => print('API error: $e'));
+        debugPrint('API server started on 127.0.0.1:7071 (fallback)');
+        _server!.listen(_handleRequest,
+            onError: (e) => debugPrint('API error: $e'));
       } catch (e2) {
-        print('API server completely failed: $e2');
+        debugPrint('API server completely failed: $e2');
       }
     }
   }
@@ -44,18 +47,10 @@ class LocalApiServer {
     _activePort = null;
   }
 
-  /// Get the local non-loopback IPv4 address for display.
+  /// Get the API listen address for display.
   static Future<String> getLocalIp() async {
-    try {
-      final interfaces =
-          await NetworkInterface.list(type: InternetAddressType.IPv4);
-      for (final iface in interfaces) {
-        for (final addr in iface.addresses) {
-          if (!addr.isLoopback) return addr.address;
-        }
-      }
-    } catch (_) {}
-    return 'localhost';
+    // API now binds to loopback only — always return 127.0.0.1.
+    return '127.0.0.1';
   }
 
   Future<void> _handleRequest(HttpRequest req) async {
@@ -150,7 +145,7 @@ class LocalApiServer {
         final body = await utf8.decoder.bind(req).join();
         final data = jsonDecode(body) as Map<String, dynamic>;
         final server = ServerConfig(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          id: generateUniqueId(),
           name: data['name'] ?? 'Server',
           host: data['host'],
           sshPort: data['sshPort'] ?? 22,

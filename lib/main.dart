@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'screens/home_screen.dart';
@@ -8,6 +9,11 @@ import 'services/proxy_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Request POST_NOTIFICATIONS permission for Android 13+ (API 33+).
+  // Must be called after engine init but while Activity is in foreground.
+  await _requestNotificationPermission();
+
   try {
     await initializeBackgroundService();
   } catch (e) {
@@ -94,6 +100,18 @@ void onBackgroundServiceStart(ServiceInstance service) async {
   Timer.periodic(const Duration(seconds: 30), (timer) {
     service.invoke('healthCheck');
   });
+}
+
+/// Request POST_NOTIFICATIONS permission via platform channel.
+/// On Android <13 or non-Android platforms, this is a no-op.
+Future<void> _requestNotificationPermission() async {
+  try {
+    const platform = MethodChannel('com.clawd.sshproxy/permissions');
+    await platform.invokeMethod('requestNotificationPermission');
+  } catch (e) {
+    // Expected to fail on iOS, desktop, or when running in background isolate.
+    debugPrint('Notification permission request: $e');
+  }
 }
 
 class MyApp extends StatelessWidget {

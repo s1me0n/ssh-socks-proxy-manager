@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/server_config.dart';
 import '../services/proxy_service.dart';
+import '../utils/id_generator.dart';
 
 class ServerFormScreen extends StatefulWidget {
   final ServerConfig? server;
@@ -179,8 +180,7 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
               if (!_formKey.currentState!.validate()) return;
               final svc = context.read<ProxyService>();
               final cfg = ServerConfig(
-                id: widget.server?.id ??
-                    DateTime.now().millisecondsSinceEpoch.toString(),
+                id: widget.server?.id ?? generateUniqueId(),
                 name: _name.text,
                 host: _host.text,
                 sshPort: int.tryParse(_sshPort.text) ?? 22,

@@ -1,37 +1,46 @@
 package com.clawd.sshproxy
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
-import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        createNotificationChannel()
+    private val CHANNEL = "com.clawd.sshproxy/permissions"
+
+    override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+        super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "requestNotificationPermission" -> {
+                        requestNotificationPermissionIfNeeded()
+                        result.success(true)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     /**
-     * Create the notification channel used by flutter_background_service.
-     *
-     * flutter_background_service only auto-creates its default channel
-     * ("FOREGROUND_DEFAULT"). When a custom notificationChannelId is specified
-     * in AndroidConfiguration, the channel MUST already exist — otherwise the
-     * foreground service notification silently fails on Android 8+ (API 26+),
-     * which can cause the service to crash or be killed by the OS.
+     * Request POST_NOTIFICATIONS permission on Android 13+ (API 33+).
+     * On older versions this is a no-op (permission is granted at install time).
      */
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                "ssh_proxy_channel",
-                "SSH Proxy Service",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Keeps SSH tunnels alive in background"
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    1001
+                )
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
         }
     }
+
+    // Note: Notification channel creation has been moved to SshProxyApplication
+    // so it runs before any component — including boot auto-start services.
 }

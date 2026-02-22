@@ -10,6 +10,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/server_config.dart';
 import '../models/active_tunnel.dart';
 import '../models/connection_log.dart';
+import '../utils/id_generator.dart';
 import 'local_api_server.dart';
 
 class ProxyService extends ChangeNotifier {
@@ -43,6 +44,12 @@ class ProxyService extends ChangeNotifier {
   }
 
   // ─── Logging ──────────────────────────────────────────────────────
+
+  /// Clear all logs. Use this instead of calling notifyListeners() externally.
+  void clearLogs() {
+    logs.clear();
+    notifyListeners();
+  }
 
   void _log(String serverName, String event, [String? details]) {
     logs.insert(
@@ -180,8 +187,7 @@ class ProxyService extends ChangeNotifier {
           s.sshPort == (data['sshPort'] ?? 22));
       if (!exists) {
         final server = ServerConfig(
-          id: DateTime.now().millisecondsSinceEpoch.toString() +
-              '_${added}',
+          id: generateUniqueId(),
           name: data['name'] ?? 'Imported',
           host: data['host'],
           sshPort: data['sshPort'] ?? 22,
@@ -538,19 +544,20 @@ class ProxyService extends ChangeNotifier {
 
   // ─── Port scanning ────────────────────────────────────────────────
 
-  /// Detect proxy type and auth for a given port
+  /// Detect proxy type and auth for a given port.
+  /// Sockets are properly closed in finally blocks to prevent resource leaks.
   Future<Map<String, String>> _detectProxyInfo(int port) async {
     final info = <String, String>{};
 
     // Try SOCKS5 handshake
+    Socket? sock;
     try {
-      final sock = await Socket.connect('127.0.0.1', port,
+      sock = await Socket.connect('127.0.0.1', port,
           timeout: const Duration(milliseconds: 500));
       sock.add([0x05, 0x01, 0x00]);
       await Future.delayed(const Duration(milliseconds: 200));
       final data =
           await sock.first.timeout(const Duration(milliseconds: 300));
-      await sock.close();
 
       if (data.length >= 2 && data[0] == 0x05) {
         info['type'] = 'SOCKS5';
@@ -559,25 +566,31 @@ class ProxyService extends ChangeNotifier {
         info['type'] = 'SOCKS4';
         info['auth'] = 'unknown';
       }
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      try { sock?.destroy(); } catch (_) {}
+    }
 
     // If not SOCKS, try HTTP proxy
     if (!info.containsKey('type')) {
+      Socket? httpSock;
       try {
-        final sock = await Socket.connect('127.0.0.1', port,
+        httpSock = await Socket.connect('127.0.0.1', port,
             timeout: const Duration(milliseconds: 500));
-        sock.add(
+        httpSock.add(
             'CONNECT test:80 HTTP/1.1\r\nHost: test:80\r\n\r\n'.codeUnits);
         await Future.delayed(const Duration(milliseconds: 200));
         final data =
-            await sock.first.timeout(const Duration(milliseconds: 300));
+            await httpSock.first.timeout(const Duration(milliseconds: 300));
         final response = String.fromCharCodes(data);
-        await sock.close();
         if (response.contains('HTTP/')) {
           info['type'] = 'HTTP Proxy';
           info['auth'] = 'unknown';
         }
-      } catch (_) {}
+      } catch (_) {
+      } finally {
+        try { httpSock?.destroy(); } catch (_) {}
+      }
     }
 
     info['port'] = port.toString();
@@ -642,17 +655,6 @@ class ProxyService extends ChangeNotifier {
     _log('System', 'info',
         'Port scan complete — ${openPorts.length} open ports found');
     notifyListeners();
-  }
-
-  Future<bool> _isPortOpen(int port) async {
-    try {
-      final s = await Socket.connect('127.0.0.1', port,
-          timeout: const Duration(seconds: 3));
-      await s.close();
-      return true;
-    } catch (_) {
-      return false;
-    }
   }
 
   // ─── Cleanup ──────────────────────────────────────────────────────

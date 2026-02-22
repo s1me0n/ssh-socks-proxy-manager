@@ -11,7 +11,7 @@
 
     <application
         android:label="SSH Proxy Manager"
-        android:name="${applicationName}"
+        android:name=".SshProxyApplication"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true">
 
