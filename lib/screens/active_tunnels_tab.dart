@@ -17,6 +17,14 @@ class ActiveTunnelsTab extends StatelessWidget {
       appBar: AppBar(
         title: const Text('Active Tunnels'),
         actions: [
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: Chip(
+              label: const Text('API :7070',
+                  style: TextStyle(fontSize: 11)),
+              avatar: const Icon(Icons.api, size: 14),
+            ),
+          ),
           svc.isScanning
               ? const Padding(
                   padding: EdgeInsets.all(14),
@@ -90,7 +98,9 @@ class _TunnelCard extends StatelessWidget {
         title: Text(tunnel.serverName),
         subtitle: Text(
             'SOCKS5  127.0.0.1:${tunnel.socksPort}  •  ${tunnel.uptimeString}'
-            '${tunnel.restartCount > 0 ? "  • restarted ${tunnel.restartCount}x" : ""}'),
+            '${tunnel.isExternal ? "\nType: ${tunnel.proxyType}  •  Auth: ${tunnel.authType}" : ""}'
+            '${tunnel.restartCount > 0 ? "  •  restarted ${tunnel.restartCount}x" : ""}'),
+        isThreeLine: tunnel.isExternal,
         trailing: onDisconnect != null
             ? IconButton(
                 icon: const Icon(Icons.stop_circle, color: Colors.red),

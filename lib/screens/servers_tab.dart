@@ -10,7 +10,19 @@ class ServersTab extends StatelessWidget {
   Widget build(BuildContext context) {
     final svc = context.watch<ProxyService>();
     return Scaffold(
-      appBar: AppBar(title: const Text('SSH Servers')),
+      appBar: AppBar(
+        title: const Text('SSH Servers'),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: Chip(
+              label: const Text('API :7070',
+                  style: TextStyle(fontSize: 11)),
+              avatar: const Icon(Icons.api, size: 14),
+            ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => Navigator.push(context,
             MaterialPageRoute(builder: (_) => const ServerFormScreen())),

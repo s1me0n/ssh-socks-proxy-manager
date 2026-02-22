@@ -6,6 +6,8 @@ class ActiveTunnel {
   final bool isExternal;
   bool isConnected;
   int restartCount;
+  final String proxyType; // 'SOCKS5', 'SOCKS4', 'HTTP Proxy', 'Unknown'
+  final String authType; // 'no-auth', 'auth-required', 'unknown'
 
   ActiveTunnel({
     required this.serverId,
@@ -15,6 +17,8 @@ class ActiveTunnel {
     this.isExternal = false,
     this.isConnected = true,
     this.restartCount = 0,
+    this.proxyType = 'SOCKS5',
+    this.authType = 'no-auth',
   });
 
   Duration get uptime => DateTime.now().difference(startedAt);

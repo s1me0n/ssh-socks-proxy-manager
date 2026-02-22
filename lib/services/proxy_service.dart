@@ -7,6 +7,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import '../models/server_config.dart';
 import '../models/active_tunnel.dart';
+import 'local_api_server.dart';
 
 class ProxyService extends ChangeNotifier {
   List<ServerConfig> servers = [];
@@ -16,11 +17,14 @@ class ProxyService extends ChangeNotifier {
   final Map<String, ServerSocket> _serverSockets = {};
   Timer? _healthCheckTimer;
   StreamSubscription? _connectivitySub;
+  late final LocalApiServer _apiServer;
 
   ProxyService() {
     _loadServers();
     _startHealthCheck();
     _listenNetworkChanges();
+    _apiServer = LocalApiServer(this);
+    _apiServer.start();
   }
 
   Future<void> _loadServers() async {
@@ -99,6 +103,8 @@ class ProxyService extends ChangeNotifier {
         serverName: server.name,
         socksPort: server.socksPort,
         startedAt: DateTime.now(),
+        proxyType: 'SOCKS5',
+        authType: 'no-auth',
       ));
       notifyListeners();
     } catch (e) {
@@ -163,6 +169,53 @@ class ProxyService extends ChangeNotifier {
     }
   }
 
+  /// Detect proxy type and auth for a given port
+  Future<Map<String, String>> _detectProxyInfo(int port) async {
+    final info = <String, String>{};
+
+    // Try SOCKS5 handshake
+    try {
+      final sock = await Socket.connect('127.0.0.1', port,
+          timeout: const Duration(milliseconds: 500));
+      // SOCKS5 greeting: version=5, nmethods=1, method=0 (no auth)
+      sock.add([0x05, 0x01, 0x00]);
+      await Future.delayed(const Duration(milliseconds: 200));
+      final data =
+          await sock.first.timeout(const Duration(milliseconds: 300));
+      await sock.close();
+
+      if (data.length >= 2 && data[0] == 0x05) {
+        info['type'] = 'SOCKS5';
+        info['auth'] = data[1] == 0x00 ? 'no-auth' : 'auth-required';
+      } else if (data.length >= 2 && data[0] == 0x04) {
+        info['type'] = 'SOCKS4';
+        info['auth'] = 'unknown';
+      }
+    } catch (_) {}
+
+    // If not SOCKS, try HTTP proxy
+    if (!info.containsKey('type')) {
+      try {
+        final sock = await Socket.connect('127.0.0.1', port,
+            timeout: const Duration(milliseconds: 500));
+        sock.add(
+            'CONNECT test:80 HTTP/1.1\r\nHost: test:80\r\n\r\n'.codeUnits);
+        await Future.delayed(const Duration(milliseconds: 200));
+        final data =
+            await sock.first.timeout(const Duration(milliseconds: 300));
+        final response = String.fromCharCodes(data);
+        await sock.close();
+        if (response.contains('HTTP/')) {
+          info['type'] = 'HTTP Proxy';
+          info['auth'] = 'unknown';
+        }
+      } catch (_) {}
+    }
+
+    info['port'] = port.toString();
+    return info;
+  }
+
   Future<void> scanAllPorts() async {
     isScanning = true;
     notifyListeners();
@@ -195,12 +248,19 @@ class ProxyService extends ChangeNotifier {
 
     for (final port in openPorts) {
       if (!managedPorts.contains(port)) {
+        // Detect proxy type for external ports
+        final proxyInfo = await _detectProxyInfo(port);
+        final detectedType = proxyInfo['type'] ?? 'Unknown';
+        final detectedAuth = proxyInfo['auth'] ?? 'unknown';
+
         activeTunnels.add(ActiveTunnel(
           serverId: 'ext_$port',
           serverName: 'External (port $port)',
           socksPort: port,
           startedAt: DateTime.now(),
           isExternal: true,
+          proxyType: detectedType,
+          authType: detectedAuth,
         ));
       }
     }
@@ -224,6 +284,7 @@ class ProxyService extends ChangeNotifier {
   void dispose() {
     _healthCheckTimer?.cancel();
     _connectivitySub?.cancel();
+    _apiServer.stop();
     for (final c in _clients.values) {
       c.close();
     }
