@@ -45,8 +45,30 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           disable-animations: true
           script: |
-            # Install the debug APK
-            adb install build/app/outputs/flutter-apk/app-debug.apk
+            # Wait for package manager to be ready
+            echo "⏳ Waiting for package manager..."
+            for i in $(seq 1 30); do
+              if adb shell pm list packages >/dev/null 2>&1; then
+                echo "✅ Package manager ready after ${i}s"
+                break
+              fi
+              sleep 2
+            done
+
+            # Install the debug APK (with retry)
+            echo "📦 Installing APK..."
+            for attempt in 1 2 3; do
+              if adb install build/app/outputs/flutter-apk/app-debug.apk; then
+                echo "✅ APK installed on attempt $attempt"
+                break
+              fi
+              echo "⚠️ Install failed (attempt $attempt/3), retrying in 10s..."
+              sleep 10
+              if [ $attempt -eq 3 ]; then
+                echo "❌ APK install failed after 3 attempts"
+                exit 1
+              fi
+            done
 
             # Launch the app
             adb shell am start -n com.clawd.sshproxy/com.clawd.sshproxy.MainActivity
@@ -75,9 +97,10 @@ jobs:
 
       - name: Dump logcat on failure
         if: failure()
+        timeout-minutes: 2
         run: |
-          adb logcat -d > logcat.txt 2>/dev/null || true
-          tail -200 logcat.txt
+          timeout 30 adb logcat -d > logcat.txt 2>/dev/null || true
+          tail -200 logcat.txt || true
 
       - name: Upload logcat
         if: failure()
