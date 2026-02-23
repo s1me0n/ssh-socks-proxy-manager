@@ -52,22 +52,32 @@ class ProxyService extends ChangeNotifier {
   Future<void> get apiReady => _apiReadyCompleter.future;
   final Completer<void> _apiReadyCompleter = Completer<void>();
 
+  /// Guards against concurrent _loadServers / _saveServers races.
+  Completer<void>? _serversLoaded;
+
   /// When [startApi] is false the local HTTP API server is NOT started.
   /// Use this in the UI isolate where the API should live in the
   /// long-lived background service isolate instead.
   ProxyService({bool startApi = true}) {
-    _loadServers();
     _startHealthCheck();
     _listenNetworkChanges();
+    // _loadServers is async — we must ensure it completes BEFORE the API
+    // server starts accepting requests, otherwise requests see empty state.
+    _serversLoaded = Completer<void>();
+    _initSequence(startApi);
+    _log('System', 'info', 'SSH Proxy Manager started (API: $startApi)');
+  }
+
+  Future<void> _initSequence(bool startApi) async {
+    await _loadServers();
+    _serversLoaded!.complete();
     if (startApi) {
-      _initApiServer();
+      await _initApiServer();
     } else {
-      // Mark API as "not applicable" so callers awaiting apiReady don't hang.
       if (!_apiReadyCompleter.isCompleted) {
         _apiReadyCompleter.complete();
       }
     }
-    _log('System', 'info', 'SSH Proxy Manager started (API: $startApi)');
   }
 
   /// Initialize and start the local REST API server.
@@ -211,6 +221,10 @@ class ProxyService extends ChangeNotifier {
   }
 
   Future<void> addServer(ServerConfig s) async {
+    // Wait for initial load to finish so we don't race with _loadServers
+    if (_serversLoaded != null && !_serversLoaded!.isCompleted) {
+      await _serversLoaded!.future;
+    }
     servers.add(s);
     await _saveServers();
     await _saveSecrets(s);
@@ -333,6 +347,10 @@ class ProxyService extends ChangeNotifier {
   // ─── SOCKS5 Tunnel ───────────────────────────────────────────────
 
   Future<void> connectTunnel(ServerConfig server) async {
+    // Wait for initial load to finish
+    if (_serversLoaded != null && !_serversLoaded!.isCompleted) {
+      await _serversLoaded!.future;
+    }
     if (_clients.containsKey(server.id)) return;
     try {
       _log(server.name, 'info',

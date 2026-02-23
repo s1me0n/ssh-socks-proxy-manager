@@ -181,17 +181,18 @@ class LocalApiServer {
     try {
       // Lightweight readiness probe — returns instantly, minimal payload.
       if (path == '/ping' && method == 'GET') {
-        _writeJson(req, {
+        await _writeJson(req, {
           'pong': true,
           'port': _activePort ?? port,
           'uptime': _startTime != null
               ? DateTime.now().difference(_startTime!).inSeconds
               : 0,
         });
+        return;
       } else if (path == '/status' && method == 'GET') {
-        _writeJson(req, {
+        await _writeJson(req, {
           'status': 'running',
-          'version': '4.0.0',
+          'version': '4.1.0',
           'servers': proxyService.servers
               .map((s) => {
                     'id': s.id,
@@ -215,14 +216,16 @@ class LocalApiServer {
               .map((t) => t.socksPort)
               .toList(),
         });
+        return;
       } else if (path == '/tunnels' && method == 'GET') {
-        _writeJson(req, {
+        await _writeJson(req, {
           'tunnels': proxyService.activeTunnels
               .map((t) => _tunnelToJson(t))
               .toList(),
         });
+        return;
       } else if (path == '/servers' && method == 'GET') {
-        _writeJson(req, {
+        await _writeJson(req, {
           'servers': proxyService.servers
               .map((s) => {
                     'id': s.id,
@@ -238,6 +241,7 @@ class LocalApiServer {
                   })
               .toList(),
         });
+        return;
 
         // ─── POST /servers/add ─────────────────────────────────────
       } else if (path == '/servers/add' && method == 'POST') {
@@ -247,13 +251,13 @@ class LocalApiServer {
         // Validate required fields
         if (data['host'] == null || (data['host'] as String).isEmpty) {
           req.response.statusCode = 400;
-          _writeJson(req, {'success': false, 'error': 'host is required'});
+          await _writeJson(req, {'success': false, 'error': 'host is required'});
           return;
         }
         if (data['username'] == null ||
             (data['username'] as String).isEmpty) {
           req.response.statusCode = 400;
-          _writeJson(
+          await _writeJson(
               req, {'success': false, 'error': 'username is required'});
           return;
         }
@@ -277,13 +281,15 @@ class LocalApiServer {
           connectOnStartup: data['connectOnStartup'] ?? false,
         );
         await proxyService.addServer(server);
-        _writeJson(req, {'success': true, 'id': server.id});
+        await _writeJson(req, {'success': true, 'id': server.id});
+        return;
 
         // ─── POST /servers/delete/{id} ─────────────────────────────
       } else if (path.startsWith('/servers/delete/') && method == 'POST') {
         final id = path.replaceFirst('/servers/delete/', '');
         await proxyService.deleteServer(id);
-        _writeJson(req, {'success': true});
+        await _writeJson(req, {'success': true});
+        return;
 
         // ─── DELETE /servers/{id} (also supported) ─────────────────
       } else if (path.startsWith('/servers/') &&
@@ -292,11 +298,12 @@ class LocalApiServer {
           method == 'DELETE') {
         final id = path.replaceFirst('/servers/', '');
         await proxyService.deleteServer(id);
-        _writeJson(req, {'success': true});
+        await _writeJson(req, {'success': true});
+        return;
 
         // ─── GET /scan/progress ────────────────────────────────────
       } else if (path == '/scan/progress' && method == 'GET') {
-        _writeJson(req, {
+        await _writeJson(req, {
           'scanning': proxyService.isScanning,
           'progress': proxyService.scanProgress,
           'scannedPorts': proxyService.scannedPorts,
@@ -304,18 +311,20 @@ class LocalApiServer {
           'found':
               proxyService.activeTunnels.where((t) => t.isExternal).length,
         });
+        return;
 
         // ─── GET /export ───────────────────────────────────────────
       } else if (path == '/export' && method == 'GET') {
         final includeKeys =
             req.uri.queryParameters['includeKeys'] == 'true';
-        _writeJson(req, {
+        await _writeJson(req, {
           'servers':
               proxyService.exportServers(includeKeys: includeKeys),
           'exportedAt': DateTime.now().toIso8601String(),
           'count': proxyService.servers.length,
           'includesKeys': includeKeys,
         });
+        return;
 
         // ─── POST /import ──────────────────────────────────────────
       } else if (path == '/import' && method == 'POST') {
@@ -328,25 +337,26 @@ class LocalApiServer {
           serverList = data;
         } else {
           req.response.statusCode = 400;
-          _writeJson(req, {
+          await _writeJson(req, {
             'success': false,
             'error': 'Expected JSON array or object with "servers" key',
           });
           return;
         }
         final added = proxyService.importServers(serverList);
-        _writeJson(req, {
+        await _writeJson(req, {
           'success': true,
           'added': added,
           'total': proxyService.servers.length,
         });
+        return;
 
         // ─── GET /logs ─────────────────────────────────────────────
       } else if (path == '/logs' && method == 'GET') {
         final limit =
             int.tryParse(req.uri.queryParameters['limit'] ?? '100') ??
                 100;
-        _writeJson(req, {
+        await _writeJson(req, {
           'logs': proxyService.logs
               .take(limit)
               .map((l) => {
@@ -357,6 +367,7 @@ class LocalApiServer {
                   })
               .toList(),
         });
+        return;
       } else if (path.startsWith('/connect/') && method == 'POST') {
         final serverId = path.replaceFirst('/connect/', '');
         final server = proxyService.servers
@@ -364,7 +375,7 @@ class LocalApiServer {
             .firstOrNull;
         if (server == null) {
           req.response.statusCode = 404;
-          _writeJson(req, {
+          await _writeJson(req, {
             'success': false,
             'error': 'Server not found: $serverId',
             'availableIds':
@@ -374,33 +385,41 @@ class LocalApiServer {
         }
         try {
           await proxyService.connectTunnel(server);
-          _writeJson(req, {
+          await _writeJson(req, {
             'success': true,
             'message': 'Connected to ${server.name}',
+            'tunnel': {
+              'serverId': server.id,
+              'socksPort': server.socksPort,
+            },
           });
         } catch (e) {
           req.response.statusCode = 500;
-          _writeJson(
+          await _writeJson(
               req, {'success': false, 'error': e.toString()});
         }
+        return;
       } else if (path.startsWith('/disconnect/') && method == 'POST') {
         final serverId = path.replaceFirst('/disconnect/', '');
         proxyService.disconnectTunnel(serverId);
-        _writeJson(
+        await _writeJson(
             req, {'success': true, 'message': 'Disconnected'});
+        return;
       } else if (path == '/scan' && method == 'POST') {
         proxyService.scanAllPorts();
-        _writeJson(req,
+        await _writeJson(req,
             {'success': true, 'message': 'Port scan started'});
+        return;
       } else if (path == '/disconnect-all' && method == 'POST') {
         for (final t in List.from(proxyService.activeTunnels)) {
           if (!t.isExternal) proxyService.disconnectTunnel(t.serverId);
         }
-        _writeJson(req,
+        await _writeJson(req,
             {'success': true, 'message': 'All tunnels disconnected'});
+        return;
       } else if (path == '/help' && method == 'GET') {
         final p = _activePort ?? port;
-        _writeJson(req, {
+        await _writeJson(req, {
           'api': 'SSH Proxy Manager API v4',
           'port': p,
           'endpoints': [
@@ -451,29 +470,29 @@ class LocalApiServer {
             'curl "localhost:$p/export?includeKeys=true"',
           ],
         });
+        return;
       } else {
         req.response.statusCode = 404;
-        _writeJson(req, {
+        await _writeJson(req, {
           'error': 'Unknown endpoint',
           'hint': 'Try GET /help for available endpoints',
         });
+        return;
       }
     } catch (e) {
       req.response.statusCode = 500;
       try {
         req.response.write(jsonEncode({'error': e.toString()}));
-      } catch (_) {}
-    } finally {
-      try {
         await req.response.close();
       } catch (_) {}
     }
   }
 
-  /// Write a JSON response. Does NOT close the response — that's done
-  /// in the finally block of _handleRequest.
-  void _writeJson(HttpRequest req, Map<String, dynamic> data) {
+  /// Write a JSON response and close it immediately.
+  /// Each handler that calls this should `return` afterward.
+  Future<void> _writeJson(HttpRequest req, Map<String, dynamic> data) async {
     req.response.write(jsonEncode(data));
+    await req.response.close();
   }
 
   /// Convert an ActiveTunnel to a JSON map with full health info.
