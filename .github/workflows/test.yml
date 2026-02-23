@@ -1,0 +1,88 @@
+name: Integration Tests (Android Emulator)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TZ: Europe/Sofia
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      - name: Run API tests on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
+          script: |
+            # Install the debug APK
+            adb install build/app/outputs/flutter-apk/app-debug.apk
+
+            # Launch the app
+            adb shell am start -n com.clawd.sshproxy/com.clawd.sshproxy.MainActivity
+
+            # Set up port forwarding (emulator localhost:7070 → host localhost:7070)
+            adb forward tcp:7070 tcp:7070
+
+            # Wait for API to be ready (up to 60s)
+            echo "⏳ Waiting for API server..."
+            for i in $(seq 1 60); do
+              if curl -sf http://127.0.0.1:7070/ping >/dev/null 2>&1; then
+                echo "✅ API ready after ${i}s"
+                break
+              fi
+              if [ $i -eq 60 ]; then
+                echo "❌ API not ready after 60s"
+                adb logcat -d | grep -i "api\|server\|7070" | tail -30
+                exit 1
+              fi
+              sleep 1
+            done
+
+            # Run the integration tests
+            chmod +x integration_test/api_test.sh
+            bash integration_test/api_test.sh
+
+      - name: Dump logcat on failure
+        if: failure()
+        run: |
+          adb logcat -d > logcat.txt 2>/dev/null || true
+          tail -200 logcat.txt
+
+      - name: Upload logcat
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logcat
+          path: logcat.txt
+          retention-days: 7
