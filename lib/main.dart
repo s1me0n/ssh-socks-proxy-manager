@@ -25,7 +25,9 @@ void main() async {
   runApp(
     ChangeNotifierProvider(
       create: (_) {
-        final svc = ProxyService();
+        // API server lives in the background service isolate so it
+        // survives when Android kills the UI (e.g. user switches to Termux).
+        final svc = ProxyService(startApi: false);
         final bgService = FlutterBackgroundService();
 
         // Wire up notification updates when tunnel count changes
@@ -104,6 +106,32 @@ void onBackgroundServiceStart(ServiceInstance service) async {
   service.on('stop').listen((_) {
     service.stopSelf();
   });
+
+  // Start ProxyService WITH the API server in the background isolate.
+  // This isolate survives when Android kills the UI activity (e.g. user
+  // switches to Termux), so the HTTP API remains reachable.
+  final bgProxyService = ProxyService(startApi: true);
+
+  // Wire up notification updates from the background ProxyService
+  bgProxyService.onTunnelCountChanged = (count) {
+    if (service is AndroidServiceInstance) {
+      service.setForegroundNotificationInfo(
+        title: 'SSH Proxy Manager',
+        content: count > 0
+            ? '$count tunnel${count == 1 ? '' : 's'} active'
+            : 'No active tunnels — API ready',
+      );
+    }
+  };
+
+  bgProxyService.onNotificationUpdate = (content) {
+    if (service is AndroidServiceInstance) {
+      service.setForegroundNotificationInfo(
+        title: 'SSH Proxy Manager',
+        content: content,
+      );
+    }
+  };
 
   // Keep alive timer — periodically signal that service is alive
   Timer.periodic(const Duration(seconds: 30), (timer) {

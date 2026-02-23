@@ -45,12 +45,22 @@ class ProxyService extends ChangeNotifier {
   Future<void> get apiReady => _apiReadyCompleter.future;
   final Completer<void> _apiReadyCompleter = Completer<void>();
 
-  ProxyService() {
+  /// When [startApi] is false the local HTTP API server is NOT started.
+  /// Use this in the UI isolate where the API should live in the
+  /// long-lived background service isolate instead.
+  ProxyService({bool startApi = true}) {
     _loadServers();
     _startHealthCheck();
     _listenNetworkChanges();
-    _initApiServer();
-    _log('System', 'info', 'SSH Proxy Manager started');
+    if (startApi) {
+      _initApiServer();
+    } else {
+      // Mark API as "not applicable" so callers awaiting apiReady don't hang.
+      if (!_apiReadyCompleter.isCompleted) {
+        _apiReadyCompleter.complete();
+      }
+    }
+    _log('System', 'info', 'SSH Proxy Manager started (API: $startApi)');
   }
 
   /// Initialize and start the local REST API server.
