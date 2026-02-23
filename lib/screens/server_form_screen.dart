@@ -14,10 +14,12 @@ class ServerFormScreen extends StatefulWidget {
 class _ServerFormScreenState extends State<ServerFormScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _name, _host, _sshPort, _username,
-      _password, _socksPort, _privateKey, _keyPassphrase;
+      _password, _socksPort, _privateKey, _keyPassphrase, _keyPath;
   bool _obscurePassword = true;
   bool _obscurePassphrase = true;
   late String _authType;
+  late bool _autoReconnect;
+  late bool _connectOnStartup;
 
   @override
   void initState() {
@@ -31,7 +33,10 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     _socksPort = TextEditingController(text: '${s?.socksPort ?? 1080}');
     _privateKey = TextEditingController(text: s?.privateKey ?? '');
     _keyPassphrase = TextEditingController(text: s?.keyPassphrase ?? '');
+    _keyPath = TextEditingController(text: s?.keyPath ?? '');
     _authType = s?.authType ?? 'password';
+    _autoReconnect = s?.autoReconnect ?? true;
+    _connectOnStartup = s?.connectOnStartup ?? false;
   }
 
   @override
@@ -44,6 +49,7 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     _socksPort.dispose();
     _privateKey.dispose();
     _keyPassphrase.dispose();
+    _keyPath.dispose();
     super.dispose();
   }
 
@@ -131,8 +137,27 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                           () => _obscurePassword = !_obscurePassword),
                     ))),
 
-          // ─── Private key field ────────────────────────────────
+          // ─── Private key fields ───────────────────────────────
           if (_authType == 'key') ...[
+            TextFormField(
+              controller: _keyPath,
+              decoration: const InputDecoration(
+                labelText: 'Key File Path (optional)',
+                prefixIcon: Icon(Icons.folder_open),
+                hintText: '/data/data/com.termux/files/home/.ssh/id_ed25519',
+                hintStyle: TextStyle(fontSize: 11),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12),
+              child: Text(
+                'Provide a key file path OR paste the key below. '
+                'If both are provided, the pasted key takes priority.',
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+            ),
+            const SizedBox(height: 8),
             TextFormField(
               controller: _privateKey,
               maxLines: 8,
@@ -148,8 +173,10 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                 border: OutlineInputBorder(),
               ),
               validator: (v) {
-                if (_authType == 'key' && (v == null || v.isEmpty)) {
-                  return 'Private key is required for SSH key auth';
+                if (_authType == 'key' &&
+                    (v == null || v.isEmpty) &&
+                    _keyPath.text.isEmpty) {
+                  return 'Private key or key file path is required';
                 }
                 return null;
               },
@@ -173,6 +200,29 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
             ),
           ],
           const SizedBox(height: 24),
+
+          // ─── Connection options ───────────────────────────────
+          const Text('Connection Options',
+              style: TextStyle(fontSize: 13, color: Colors.grey)),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            title: const Text('Auto-reconnect'),
+            subtitle: const Text(
+                'Automatically reconnect if tunnel drops',
+                style: TextStyle(fontSize: 12)),
+            value: _autoReconnect,
+            onChanged: (v) => setState(() => _autoReconnect = v),
+          ),
+          SwitchListTile(
+            title: const Text('Connect on startup'),
+            subtitle: const Text(
+                'Auto-connect when app starts',
+                style: TextStyle(fontSize: 12)),
+            value: _connectOnStartup,
+            onChanged: (v) => setState(() => _connectOnStartup = v),
+          ),
+          const SizedBox(height: 16),
+
           FilledButton.icon(
             icon: Icon(isEdit ? Icons.save : Icons.add),
             label: Text(isEdit ? 'Save Changes' : 'Add Server'),
@@ -189,10 +239,18 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                 socksPort: int.tryParse(_socksPort.text) ?? 1080,
                 authType: _authType,
                 privateKey:
-                    _authType == 'key' ? _privateKey.text : null,
-                keyPassphrase: _authType == 'key' && _keyPassphrase.text.isNotEmpty
-                    ? _keyPassphrase.text
+                    _authType == 'key' && _privateKey.text.isNotEmpty
+                        ? _privateKey.text
+                        : null,
+                keyPassphrase:
+                    _authType == 'key' && _keyPassphrase.text.isNotEmpty
+                        ? _keyPassphrase.text
+                        : null,
+                keyPath: _authType == 'key' && _keyPath.text.isNotEmpty
+                    ? _keyPath.text
                     : null,
+                autoReconnect: _autoReconnect,
+                connectOnStartup: _connectOnStartup,
               );
               if (isEdit) {
                 svc.updateServer(cfg);

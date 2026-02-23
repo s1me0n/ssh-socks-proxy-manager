@@ -10,6 +10,9 @@ class ServerConfig {
   final String authType; // 'password' or 'key'
   String? privateKey; // PEM format, loaded from secure storage
   String? keyPassphrase; // optional passphrase for encrypted keys
+  String? keyPath; // path to private key file on device
+  bool autoReconnect; // auto-reconnect on unexpected disconnect (default: true)
+  bool connectOnStartup; // auto-connect when app starts (default: false)
 
   ServerConfig({
     required this.id,
@@ -23,6 +26,9 @@ class ServerConfig {
     this.authType = 'password',
     this.privateKey,
     this.keyPassphrase,
+    this.keyPath,
+    this.autoReconnect = true,
+    this.connectOnStartup = false,
   });
 
   /// Serialize to JSON — secrets (password, privateKey, keyPassphrase) are NOT included.
@@ -36,6 +42,9 @@ class ServerConfig {
         'socksPort': socksPort,
         'isEnabled': isEnabled,
         'authType': authType,
+        'keyPath': keyPath,
+        'autoReconnect': autoReconnect,
+        'connectOnStartup': connectOnStartup,
       };
 
   factory ServerConfig.fromJson(Map<String, dynamic> j) => ServerConfig(
@@ -48,5 +57,8 @@ class ServerConfig {
         socksPort: j['socksPort'] ?? 1080,
         isEnabled: j['isEnabled'] ?? false,
         authType: j['authType'] ?? 'password',
+        keyPath: j['keyPath'],
+        autoReconnect: j['autoReconnect'] ?? true,
+        connectOnStartup: j['connectOnStartup'] ?? false,
       );
 }

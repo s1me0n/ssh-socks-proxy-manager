@@ -123,6 +123,29 @@ class _TunnelCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final hasBandwidth = tunnel.bytesIn > 0 || tunnel.bytesOut > 0;
+    final hasLatency = tunnel.latencyMs != null;
+    final hasReconnects = tunnel.reconnectCount > 0;
+
+    // Build subtitle parts
+    final lines = <String>[
+      'SOCKS5  127.0.0.1:${tunnel.socksPort}  •  ${tunnel.uptimeString}',
+    ];
+
+    // Health info line
+    final healthParts = <String>[];
+    if (hasLatency) healthParts.add('${tunnel.latencyMs}ms');
+    if (hasBandwidth) healthParts.add(tunnel.bandwidthString);
+    if (hasReconnects) healthParts.add('↻${tunnel.reconnectCount}');
+    if (healthParts.isNotEmpty) lines.add(healthParts.join('  •  '));
+
+    if (tunnel.isExternal) {
+      lines.add('Type: ${tunnel.proxyType}  •  Auth: ${tunnel.authType}');
+    }
+
+    if (tunnel.reconnectCount > 0) {
+      lines.add('Total uptime: ${tunnel.totalUptimeString}');
+    }
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: ListTile(
@@ -134,12 +157,8 @@ class _TunnelCard extends StatelessWidget {
               color: Colors.white),
         ),
         title: Text(tunnel.serverName),
-        subtitle: Text(
-            'SOCKS5  127.0.0.1:${tunnel.socksPort}  •  ${tunnel.uptimeString}'
-            '${hasBandwidth ? "\n${tunnel.bandwidthString}" : ""}'
-            '${tunnel.isExternal ? "\nType: ${tunnel.proxyType}  •  Auth: ${tunnel.authType}" : ""}'
-            '${tunnel.restartCount > 0 ? "  •  restarted ${tunnel.restartCount}x" : ""}'),
-        isThreeLine: tunnel.isExternal || hasBandwidth,
+        subtitle: Text(lines.join('\n')),
+        isThreeLine: lines.length > 1,
         trailing: onDisconnect != null
             ? IconButton(
                 icon: const Icon(Icons.stop_circle, color: Colors.red),

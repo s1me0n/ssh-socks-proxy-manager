@@ -21,7 +21,8 @@ class SettingsTab extends StatelessWidget {
                   fontSize: 16, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           const Text(
-            'Export saves server configs (without passwords or keys).\n'
+            'Export saves server configs. Use "Export with keys" to include '
+            'private keys and passwords.\n'
             'Import merges servers — duplicates (same host+user+port) are skipped.',
             style: TextStyle(fontSize: 13, color: Colors.grey),
           ),
@@ -59,6 +60,31 @@ class SettingsTab extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.vpn_key),
+              label: const Text('Export with Keys'),
+              onPressed: svc.servers.isEmpty
+                  ? null
+                  : () {
+                      final json = jsonEncode({
+                        'servers':
+                            svc.exportServers(includeKeys: true),
+                        'exportedAt':
+                            DateTime.now().toIso8601String(),
+                        'includesKeys': true,
+                      });
+                      Clipboard.setData(ClipboardData(text: json));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                            content: Text(
+                                'Exported ${svc.servers.length} server(s) WITH KEYS to clipboard')),
+                      );
+                    },
+            ),
+          ),
           const SizedBox(height: 32),
 
           // ─── Info section ────────────────────────────────────
@@ -72,7 +98,7 @@ class SettingsTab extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('SSH SOCKS Proxy Manager v2.0.0'),
+                  const Text('SSH SOCKS Proxy Manager v3.0.0'),
                   const SizedBox(height: 8),
                   Text('Servers: ${svc.servers.length}',
                       style: const TextStyle(color: Colors.grey)),
@@ -98,14 +124,19 @@ class SettingsTab extends StatelessWidget {
                   Text('• Full SOCKS5 proxy (IPv4, IPv6, domain)'),
                   Text('• SSH password & key authentication'),
                   Text('• Ed25519 & RSA key support'),
+                  Text('• SSH keepalive (15s interval)'),
+                  Text('• Auto-reconnect with exponential backoff'),
+                  Text('• Auto-connect on startup (per server)'),
+                  Text('• Connection health monitoring'),
                   Text('• Background foreground service'),
                   Text('• Auto-reconnect on network change'),
                   Text('• Health check every 30s'),
                   Text('• REST API on port 7070'),
                   Text('• Encrypted secret storage'),
                   Text('• Per-tunnel bandwidth stats'),
-                  Text('• Connection logging'),
-                  Text('• Server import/export'),
+                  Text('• Key file path support'),
+                  Text('• Export/import with optional keys'),
+                  Text('• Connection logging with reasons'),
                   Text('• Boot auto-start'),
                 ],
               ),

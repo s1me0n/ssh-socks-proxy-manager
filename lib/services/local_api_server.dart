@@ -34,7 +34,8 @@ class LocalApiServer {
   /// subsequent calls await the same Future.
   Future<void> start() async {
     if (_running) {
-      debugPrint('⚠️ API server already running on port $_activePort, skipping duplicate start');
+      debugPrint(
+          '⚠️ API server already running on port $_activePort, skipping duplicate start');
       return;
     }
 
@@ -61,7 +62,8 @@ class LocalApiServer {
     for (int attempt = 1; attempt <= _maxRetries; attempt++) {
       // Try primary port
       try {
-        debugPrint('🔌 Starting API server on 0.0.0.0:$port (attempt $attempt/$_maxRetries)...');
+        debugPrint(
+            '🔌 Starting API server on 0.0.0.0:$port (attempt $attempt/$_maxRetries)...');
         _server = await HttpServer.bind(InternetAddress.anyIPv4, port,
             shared: true);
         _activePort = port;
@@ -75,8 +77,10 @@ class LocalApiServer {
 
       // Try fallback port
       try {
-        debugPrint('🔌 Trying fallback port $_fallbackPort (attempt $attempt/$_maxRetries)...');
-        _server = await HttpServer.bind(InternetAddress.anyIPv4, _fallbackPort,
+        debugPrint(
+            '🔌 Trying fallback port $_fallbackPort (attempt $attempt/$_maxRetries)...');
+        _server = await HttpServer.bind(
+            InternetAddress.anyIPv4, _fallbackPort,
             shared: true);
         _activePort = _fallbackPort;
         _running = true;
@@ -84,7 +88,8 @@ class LocalApiServer {
         await _logSuccess();
         return;
       } catch (e) {
-        debugPrint('❌ Failed to bind port $_fallbackPort (attempt $attempt): $e');
+        debugPrint(
+            '❌ Failed to bind port $_fallbackPort (attempt $attempt): $e');
       }
 
       // Wait before retrying (except on last attempt)
@@ -100,12 +105,11 @@ class LocalApiServer {
 
   void _attachListener() {
     _server!.listen(_handleRequest,
-        onError: (e) => debugPrint('❌ API stream error: $e'),
-        onDone: () {
-          debugPrint('⚠️ API server stream closed on port $_activePort');
-          _running = false;
-          _startCompleter = null; // Allow restart
-        });
+        onError: (e) => debugPrint('❌ API stream error: $e'), onDone: () {
+      debugPrint('⚠️ API server stream closed on port $_activePort');
+      _running = false;
+      _startCompleter = null; // Allow restart
+    });
   }
 
   Future<void> _logSuccess() async {
@@ -162,9 +166,12 @@ class LocalApiServer {
     if (req.method == 'OPTIONS') {
       req.response.headers
           .set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-      req.response.headers.set('Access-Control-Allow-Headers', 'Content-Type');
+      req.response.headers
+          .set('Access-Control-Allow-Headers', 'Content-Type');
       req.response.statusCode = 204;
-      await req.response.close();
+      try {
+        await req.response.close();
+      } catch (_) {}
       return;
     }
 
@@ -173,19 +180,18 @@ class LocalApiServer {
 
     try {
       // Lightweight readiness probe — returns instantly, minimal payload.
-      // Termux can use: while ! curl -sf localhost:7070/ping; do sleep 1; done
       if (path == '/ping' && method == 'GET') {
-        req.response.write(jsonEncode({
+        _writeJson(req, {
           'pong': true,
           'port': _activePort ?? port,
           'uptime': _startTime != null
               ? DateTime.now().difference(_startTime!).inSeconds
               : 0,
-        }));
+        });
       } else if (path == '/status' && method == 'GET') {
-        req.response.write(jsonEncode({
+        _writeJson(req, {
           'status': 'running',
-          'version': '3.1.0',
+          'version': '4.0.0',
           'servers': proxyService.servers
               .map((s) => {
                     'id': s.id,
@@ -196,48 +202,27 @@ class LocalApiServer {
                     'username': s.username,
                     'authType': s.authType,
                     'enabled': s.isEnabled,
+                    'autoReconnect': s.autoReconnect,
+                    'connectOnStartup': s.connectOnStartup,
+                    'keyPath': s.keyPath,
                   })
               .toList(),
           'activeTunnels': proxyService.activeTunnels
-              .map((t) => {
-                    'serverId': t.serverId,
-                    'name': t.serverName,
-                    'socksPort': t.socksPort,
-                    'uptime': t.uptime.inSeconds,
-                    'uptimeStr': t.uptimeString,
-                    'isExternal': t.isExternal,
-                    'restartCount': t.restartCount,
-                    'proxyType': t.proxyType,
-                    'authType': t.authType,
-                    'bytesIn': t.bytesIn,
-                    'bytesOut': t.bytesOut,
-                    'bandwidth': t.bandwidthString,
-                  })
+              .map((t) => _tunnelToJson(t))
               .toList(),
           'externalPorts': proxyService.activeTunnels
               .where((t) => t.isExternal)
               .map((t) => t.socksPort)
               .toList(),
-        }));
+        });
       } else if (path == '/tunnels' && method == 'GET') {
-        req.response.write(jsonEncode({
+        _writeJson(req, {
           'tunnels': proxyService.activeTunnels
-              .map((t) => {
-                    'serverId': t.serverId,
-                    'name': t.serverName,
-                    'socksPort': t.socksPort,
-                    'uptime': t.uptime.inSeconds,
-                    'isExternal': t.isExternal,
-                    'proxyType': t.proxyType,
-                    'authType': t.authType,
-                    'bytesIn': t.bytesIn,
-                    'bytesOut': t.bytesOut,
-                    'bandwidth': t.bandwidthString,
-                  })
+              .map((t) => _tunnelToJson(t))
               .toList(),
-        }));
+        });
       } else if (path == '/servers' && method == 'GET') {
-        req.response.write(jsonEncode({
+        _writeJson(req, {
           'servers': proxyService.servers
               .map((s) => {
                     'id': s.id,
@@ -247,14 +232,32 @@ class LocalApiServer {
                     'socksPort': s.socksPort,
                     'authType': s.authType,
                     'enabled': s.isEnabled,
+                    'autoReconnect': s.autoReconnect,
+                    'connectOnStartup': s.connectOnStartup,
+                    'keyPath': s.keyPath,
                   })
               .toList(),
-        }));
+        });
 
         // ─── POST /servers/add ─────────────────────────────────────
       } else if (path == '/servers/add' && method == 'POST') {
         final body = await utf8.decoder.bind(req).join();
         final data = jsonDecode(body) as Map<String, dynamic>;
+
+        // Validate required fields
+        if (data['host'] == null || (data['host'] as String).isEmpty) {
+          req.response.statusCode = 400;
+          _writeJson(req, {'success': false, 'error': 'host is required'});
+          return;
+        }
+        if (data['username'] == null ||
+            (data['username'] as String).isEmpty) {
+          req.response.statusCode = 400;
+          _writeJson(
+              req, {'success': false, 'error': 'username is required'});
+          return;
+        }
+
         final server = ServerConfig(
           id: generateUniqueId(),
           name: data['name'] ?? 'Server',
@@ -264,19 +267,23 @@ class LocalApiServer {
           password: data['password'] ?? '',
           privateKey: data['privateKey'],
           keyPassphrase: data['keyPassphrase'],
+          keyPath: data['keyPath'],
           authType: data['authType'] ??
-              (data['privateKey'] != null ? 'key' : 'password'),
+              (data['privateKey'] != null || data['keyPath'] != null
+                  ? 'key'
+                  : 'password'),
           socksPort: data['socksPort'] ?? 1080,
+          autoReconnect: data['autoReconnect'] ?? true,
+          connectOnStartup: data['connectOnStartup'] ?? false,
         );
-        proxyService.addServer(server);
-        req.response
-            .write(jsonEncode({'success': true, 'id': server.id}));
+        await proxyService.addServer(server);
+        _writeJson(req, {'success': true, 'id': server.id});
 
         // ─── POST /servers/delete/{id} ─────────────────────────────
       } else if (path.startsWith('/servers/delete/') && method == 'POST') {
         final id = path.replaceFirst('/servers/delete/', '');
-        proxyService.deleteServer(id);
-        req.response.write(jsonEncode({'success': true}));
+        await proxyService.deleteServer(id);
+        _writeJson(req, {'success': true});
 
         // ─── DELETE /servers/{id} (also supported) ─────────────────
       } else if (path.startsWith('/servers/') &&
@@ -284,28 +291,31 @@ class LocalApiServer {
           !path.startsWith('/servers/delete/') &&
           method == 'DELETE') {
         final id = path.replaceFirst('/servers/', '');
-        proxyService.deleteServer(id);
-        req.response.write(jsonEncode({'success': true}));
+        await proxyService.deleteServer(id);
+        _writeJson(req, {'success': true});
 
         // ─── GET /scan/progress ────────────────────────────────────
       } else if (path == '/scan/progress' && method == 'GET') {
-        req.response.write(jsonEncode({
+        _writeJson(req, {
           'scanning': proxyService.isScanning,
           'progress': proxyService.scanProgress,
           'scannedPorts': proxyService.scannedPorts,
           'totalPorts': 65535,
-          'found': proxyService.activeTunnels
-              .where((t) => t.isExternal)
-              .length,
-        }));
+          'found':
+              proxyService.activeTunnels.where((t) => t.isExternal).length,
+        });
 
         // ─── GET /export ───────────────────────────────────────────
       } else if (path == '/export' && method == 'GET') {
-        req.response.write(jsonEncode({
-          'servers': proxyService.exportServers(),
+        final includeKeys =
+            req.uri.queryParameters['includeKeys'] == 'true';
+        _writeJson(req, {
+          'servers':
+              proxyService.exportServers(includeKeys: includeKeys),
           'exportedAt': DateTime.now().toIso8601String(),
           'count': proxyService.servers.length,
-        }));
+          'includesKeys': includeKeys,
+        });
 
         // ─── POST /import ──────────────────────────────────────────
       } else if (path == '/import' && method == 'POST') {
@@ -318,26 +328,25 @@ class LocalApiServer {
           serverList = data;
         } else {
           req.response.statusCode = 400;
-          req.response.write(jsonEncode({
+          _writeJson(req, {
             'success': false,
-            'error':
-                'Expected JSON array or object with "servers" key',
-          }));
-          await req.response.close();
+            'error': 'Expected JSON array or object with "servers" key',
+          });
           return;
         }
         final added = proxyService.importServers(serverList);
-        req.response.write(jsonEncode({
+        _writeJson(req, {
           'success': true,
           'added': added,
           'total': proxyService.servers.length,
-        }));
+        });
 
         // ─── GET /logs ─────────────────────────────────────────────
       } else if (path == '/logs' && method == 'GET') {
         final limit =
-            int.tryParse(req.uri.queryParameters['limit'] ?? '100') ?? 100;
-        req.response.write(jsonEncode({
+            int.tryParse(req.uri.queryParameters['limit'] ?? '100') ??
+                100;
+        _writeJson(req, {
           'logs': proxyService.logs
               .take(limit)
               .map((l) => {
@@ -347,81 +356,146 @@ class LocalApiServer {
                     'details': l.details,
                   })
               .toList(),
-        }));
+        });
       } else if (path.startsWith('/connect/') && method == 'POST') {
         final serverId = path.replaceFirst('/connect/', '');
+        final server = proxyService.servers
+            .where((s) => s.id == serverId)
+            .firstOrNull;
+        if (server == null) {
+          req.response.statusCode = 404;
+          _writeJson(req, {
+            'success': false,
+            'error': 'Server not found: $serverId',
+            'availableIds':
+                proxyService.servers.map((s) => s.id).toList(),
+          });
+          return;
+        }
         try {
-          final server =
-              proxyService.servers.firstWhere((s) => s.id == serverId);
           await proxyService.connectTunnel(server);
-          req.response.write(jsonEncode(
-              {'success': true, 'message': 'Connected to ${server.name}'}));
+          _writeJson(req, {
+            'success': true,
+            'message': 'Connected to ${server.name}',
+          });
         } catch (e) {
-          req.response.statusCode = 400;
-          req.response
-              .write(jsonEncode({'success': false, 'error': e.toString()}));
+          req.response.statusCode = 500;
+          _writeJson(
+              req, {'success': false, 'error': e.toString()});
         }
       } else if (path.startsWith('/disconnect/') && method == 'POST') {
         final serverId = path.replaceFirst('/disconnect/', '');
         proxyService.disconnectTunnel(serverId);
-        req.response
-            .write(jsonEncode({'success': true, 'message': 'Disconnected'}));
+        _writeJson(
+            req, {'success': true, 'message': 'Disconnected'});
       } else if (path == '/scan' && method == 'POST') {
         proxyService.scanAllPorts();
-        req.response.write(
-            jsonEncode({'success': true, 'message': 'Port scan started'}));
+        _writeJson(req,
+            {'success': true, 'message': 'Port scan started'});
       } else if (path == '/disconnect-all' && method == 'POST') {
         for (final t in List.from(proxyService.activeTunnels)) {
           if (!t.isExternal) proxyService.disconnectTunnel(t.serverId);
         }
-        req.response.write(jsonEncode(
-            {'success': true, 'message': 'All tunnels disconnected'}));
+        _writeJson(req,
+            {'success': true, 'message': 'All tunnels disconnected'});
       } else if (path == '/help' && method == 'GET') {
-        req.response.write(jsonEncode({
-          'api': 'SSH Proxy Manager API v3',
-          'port': _activePort ?? port,
+        final p = _activePort ?? port;
+        _writeJson(req, {
+          'api': 'SSH Proxy Manager API v4',
+          'port': p,
           'endpoints': [
-            'GET  /ping               — readiness probe (lightweight)',
-            'GET  /status              — full status',
-            'GET  /tunnels             — active tunnels',
-            'GET  /servers             — saved servers',
-            'POST /servers/add         — add server (JSON body)',
-            'POST /servers/delete/{id} — delete server by id',
-            'DELETE /servers/{id}      — delete server by id',
-            'POST /connect/{id}       — connect server by ID',
-            'POST /disconnect/{id}    — disconnect server by ID',
-            'POST /disconnect-all     — stop all tunnels',
-            'POST /scan               — scan all ports',
-            'GET  /scan/progress      — scan progress',
-            'GET  /logs?limit=100     — connection logs',
-            'GET  /export             — export servers (no secrets)',
-            'POST /import             — import/merge servers (JSON body)',
+            'GET  /ping                    — readiness probe (lightweight)',
+            'GET  /status                  — full status',
+            'GET  /tunnels                 — active tunnels with health info',
+            'GET  /servers                 — saved servers',
+            'POST /servers/add             — add server (JSON body)',
+            'POST /servers/delete/{id}     — delete server by id',
+            'DELETE /servers/{id}          — delete server by id',
+            'POST /connect/{id}            — connect server by ID',
+            'POST /disconnect/{id}         — disconnect server by ID',
+            'POST /disconnect-all          — stop all tunnels',
+            'POST /scan                    — scan all ports',
+            'GET  /scan/progress           — scan progress',
+            'GET  /logs?limit=100          — connection logs',
+            'GET  /export?includeKeys=true — export servers (optional: with keys)',
+            'POST /import                  — import/merge servers (JSON body)',
+            'GET  /help                    — this help',
           ],
+          'serverAddFields': {
+            'required': ['host', 'username'],
+            'optional': [
+              'name',
+              'sshPort (default: 22)',
+              'socksPort (default: 1080)',
+              'password',
+              'privateKey (PEM string)',
+              'keyPath (path to key file)',
+              'keyPassphrase',
+              'authType (password|key)',
+              'autoReconnect (default: true)',
+              'connectOnStartup (default: false)',
+            ],
+          },
           'termux_examples': [
             '# Wait for API ready:',
-            'while ! curl -sf localhost:${_activePort ?? port}/ping; do sleep 1; done',
-            'curl localhost:${_activePort ?? port}/status',
-            'curl -X POST -H "Content-Type: application/json" -d \'{"name":"My Server","host":"1.2.3.4","username":"root","password":"pass"}\' localhost:${_activePort ?? port}/servers/add',
-            'curl -X POST localhost:${_activePort ?? port}/connect/{serverId}',
-            'curl -X POST localhost:${_activePort ?? port}/servers/delete/{serverId}',
-            'curl localhost:${_activePort ?? port}/scan/progress',
-            'curl localhost:${_activePort ?? port}/logs',
-            'curl localhost:${_activePort ?? port}/export',
-            'curl -X POST -H "Content-Type: application/json" -d @servers.json localhost:${_activePort ?? port}/import',
+            'while ! curl -sf localhost:$p/ping; do sleep 1; done',
+            'curl localhost:$p/status',
+            'curl -X POST -H "Content-Type: application/json" '
+                '-d \'{"name":"My Server","host":"1.2.3.4","username":"root","password":"pass"}\' '
+                'localhost:$p/servers/add',
+            'curl -X POST -H "Content-Type: application/json" '
+                '-d \'{"name":"Key Server","host":"1.2.3.4","username":"root","keyPath":"/data/data/com.termux/files/home/.ssh/id_ed25519"}\' '
+                'localhost:$p/servers/add',
+            'curl -X POST localhost:$p/connect/{serverId}',
+            'curl localhost:$p/tunnels',
+            'curl "localhost:$p/export?includeKeys=true"',
           ],
-        }));
+        });
       } else {
         req.response.statusCode = 404;
-        req.response.write(jsonEncode({
+        _writeJson(req, {
           'error': 'Unknown endpoint',
           'hint': 'Try GET /help for available endpoints',
-        }));
+        });
       }
     } catch (e) {
       req.response.statusCode = 500;
-      req.response.write(jsonEncode({'error': e.toString()}));
+      try {
+        req.response.write(jsonEncode({'error': e.toString()}));
+      } catch (_) {}
+    } finally {
+      try {
+        await req.response.close();
+      } catch (_) {}
     }
+  }
 
-    await req.response.close();
+  /// Write a JSON response. Does NOT close the response — that's done
+  /// in the finally block of _handleRequest.
+  void _writeJson(HttpRequest req, Map<String, dynamic> data) {
+    req.response.write(jsonEncode(data));
+  }
+
+  /// Convert an ActiveTunnel to a JSON map with full health info.
+  Map<String, dynamic> _tunnelToJson(dynamic t) {
+    return {
+      'serverId': t.serverId,
+      'name': t.serverName,
+      'socksPort': t.socksPort,
+      'uptime': t.uptime.inSeconds,
+      'uptimeStr': t.uptimeString,
+      'isExternal': t.isExternal,
+      'reconnectCount': t.reconnectCount,
+      'proxyType': t.proxyType,
+      'authType': t.authType,
+      'bytesIn': t.bytesIn,
+      'bytesOut': t.bytesOut,
+      'bandwidth': t.bandwidthString,
+      // Health monitoring fields
+      'latencyMs': t.latencyMs,
+      'lastKeepaliveAt': t.lastKeepaliveAt?.toIso8601String(),
+      'totalUptime': t.effectiveTotalUptime.inSeconds,
+      'totalUptimeStr': t.totalUptimeString,
+    };
   }
 }

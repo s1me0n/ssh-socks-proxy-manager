@@ -5,13 +5,19 @@ class ActiveTunnel {
   final DateTime startedAt;
   final bool isExternal;
   bool isConnected;
-  int restartCount;
+  int reconnectCount;
   final String proxyType; // 'SOCKS5', 'SOCKS4', 'HTTP Proxy', 'Unknown'
   final String authType; // 'no-auth', 'auth-required', 'unknown'
 
   // Bandwidth tracking
   int bytesIn = 0;
   int bytesOut = 0;
+
+  // Health monitoring
+  int? latencyMs;
+  DateTime? lastKeepaliveAt;
+  Duration totalUptime; // cumulative uptime across reconnects
+  String? disconnectReason;
 
   ActiveTunnel({
     required this.serverId,
@@ -20,15 +26,29 @@ class ActiveTunnel {
     required this.startedAt,
     this.isExternal = false,
     this.isConnected = true,
-    this.restartCount = 0,
+    this.reconnectCount = 0,
     this.proxyType = 'SOCKS5',
     this.authType = 'no-auth',
+    this.latencyMs,
+    this.lastKeepaliveAt,
+    this.totalUptime = Duration.zero,
+    this.disconnectReason,
   });
 
   Duration get uptime => DateTime.now().difference(startedAt);
 
+  /// Total uptime including previous connections.
+  Duration get effectiveTotalUptime => totalUptime + uptime;
+
   String get uptimeString {
     final d = uptime;
+    if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
+    if (d.inMinutes > 0) return '${d.inMinutes}m ${d.inSeconds % 60}s';
+    return '${d.inSeconds}s';
+  }
+
+  String get totalUptimeString {
+    final d = effectiveTotalUptime;
     if (d.inHours > 0) return '${d.inHours}h ${d.inMinutes % 60}m';
     if (d.inMinutes > 0) return '${d.inMinutes}m ${d.inSeconds % 60}s';
     return '${d.inSeconds}s';
