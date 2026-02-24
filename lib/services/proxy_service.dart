@@ -29,6 +29,7 @@ class ProxyService extends ChangeNotifier {
 
   final Map<String, SSHClient> _clients = {};
   final Map<String, ServerSocket> _serverSockets = {};
+  final Set<String> _connecting = {};
   Timer? _healthCheckTimer;
   Timer? _statsCollectionTimer;
   StreamSubscription? _connectivitySub;
@@ -496,6 +497,8 @@ class ProxyService extends ChangeNotifier {
       await _serversLoaded!.future;
     }
     if (_clients.containsKey(server.id)) return;
+    if (_connecting.contains(server.id)) return;
+    _connecting.add(server.id);
     try {
       _log(server.name, 'info',
           'Connecting to ${server.host}:${server.sshPort}...');
@@ -535,6 +538,11 @@ class ProxyService extends ChangeNotifier {
       _log(server.name, 'connected',
           'SSH authenticated (${server.authType})');
 
+      // Close any lingering server socket before binding
+      final existingSocket = _serverSockets.remove(server.id);
+      if (existingSocket != null) {
+        await existingSocket.close();
+      }
       final serverSocket =
           await ServerSocket.bind(InternetAddress.anyIPv4, server.socksPort);
       _serverSockets[server.id] = serverSocket;
@@ -592,6 +600,7 @@ class ProxyService extends ChangeNotifier {
       _notifyTunnelCount();
       notifyListeners();
     } on SocketException catch (e) {
+      _connecting.remove(server.id);
       final reason = _classifyDisconnectReason(e, host: server.host);
       _log(server.name, 'error', 'Connection failed: $reason');
       eventBroadcaster.emit('error', {
@@ -600,6 +609,7 @@ class ProxyService extends ChangeNotifier {
       });
       rethrow;
     } catch (e) {
+      _connecting.remove(server.id);
       final reason = _classifyDisconnectReason(e, host: server.host);
       _log(server.name, 'error', 'Connection failed: $reason');
       eventBroadcaster.emit('error', {
@@ -607,6 +617,8 @@ class ProxyService extends ChangeNotifier {
         'message': reason,
       });
       rethrow;
+    } finally {
+      _connecting.remove(server.id);
     }
   }
 
