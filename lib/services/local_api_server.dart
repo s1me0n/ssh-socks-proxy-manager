@@ -167,18 +167,25 @@ class LocalApiServer {
           final token = req.uri.queryParameters['token'];
           if (token == null || token != proxyService.apiToken) {
             req.response.statusCode = 401;
-            await _writeJson(req, {'error': 'Unauthorized'});
+            await _writeJson(req, {'error': 'Unauthorized', 'code': 401});
             return;
           }
         }
         final ws = await WebSocketTransformer.upgrade(req);
         proxyService.eventBroadcaster.addClient(ws);
-        // Handle ping/pong heartbeat
+
+        // Send current state of all active tunnels
+        final tunnelSnapshots = proxyService.activeTunnels
+            .where((t) => !t.isExternal)
+            .map((t) => _tunnelToJson(t))
+            .toList();
+        proxyService.eventBroadcaster.sendInitialState(ws, tunnelSnapshots);
+
+        // Handle client messages (pong responses)
         ws.listen(
           (data) {
-            if (data == 'ping') {
-              ws.add('pong');
-            }
+            // Client sends pong in response to server ping — acknowledged
+            // Client can also send JSON {"event": "pong"}
           },
           onDone: () {},
           onError: (_) {},
