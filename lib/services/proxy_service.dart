@@ -11,12 +11,16 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/server_config.dart';
 import '../models/active_tunnel.dart';
 import '../models/connection_log.dart';
+import '../models/quick_profile.dart';
 import '../utils/id_generator.dart';
 import 'local_api_server.dart';
+import 'stats_database.dart';
+import 'event_broadcaster.dart';
 
 class ProxyService extends ChangeNotifier {
   List<ServerConfig> servers = [];
   List<ActiveTunnel> activeTunnels = [];
+  List<QuickProfile> profiles = [];
   bool isScanning = false;
   double scanProgress = 0.0;
   int scannedPorts = 0;
@@ -26,17 +30,59 @@ class ProxyService extends ChangeNotifier {
   final Map<String, SSHClient> _clients = {};
   final Map<String, ServerSocket> _serverSockets = {};
   Timer? _healthCheckTimer;
+  Timer? _statsCollectionTimer;
   StreamSubscription? _connectivitySub;
   LocalApiServer? _apiServer;
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage(
     aOptions: AndroidOptions(encryptedSharedPreferences: true),
   );
+  final StatsDatabase statsDb = StatsDatabase();
+  final EventBroadcaster eventBroadcaster = EventBroadcaster();
+
+  // ─── API authentication ──────────────────────────────────────────
+  String? _apiToken;
+  bool _apiAuthEnabled = false;
+
+  String? get apiToken => _apiToken;
+  bool get apiAuthEnabled => _apiAuthEnabled;
+
+  Future<void> setApiAuthEnabled(bool enabled) async {
+    _apiAuthEnabled = enabled;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('apiAuthEnabled', enabled);
+    notifyListeners();
+  }
+
+  Future<String> regenerateApiToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    _apiToken = _generateToken();
+    await prefs.setString('apiToken', _apiToken!);
+    notifyListeners();
+    return _apiToken!;
+  }
+
+  String _generateToken() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+    return base64Url.encode(bytes).replaceAll('=', '');
+  }
+
+  Future<void> _loadApiAuth() async {
+    final prefs = await SharedPreferences.getInstance();
+    _apiToken = prefs.getString('apiToken');
+    _apiAuthEnabled = prefs.getBool('apiAuthEnabled') ?? false;
+    if (_apiToken == null || _apiToken!.isEmpty) {
+      _apiToken = _generateToken();
+      await prefs.setString('apiToken', _apiToken!);
+    }
+  }
 
   // ─── Auto-reconnect state ────────────────────────────────────────
   final Map<String, Timer> _reconnectTimers = {};
   final Map<String, int> _reconnectAttempts = {};
   final Set<String> _disconnecting = {};
   final Set<String> _activeReconnects = {};
+  final Map<String, DateTime> _disconnectTimes = {};
 
   /// Callback for updating background service notification.
   void Function(int activeTunnelCount)? onTunnelCountChanged;
@@ -48,28 +94,25 @@ class ProxyService extends ChangeNotifier {
   LocalApiServer? get apiServer => _apiServer;
 
   /// Future that completes when the API server is ready.
-  /// Allows callers to await API readiness.
   Future<void> get apiReady => _apiReadyCompleter.future;
   final Completer<void> _apiReadyCompleter = Completer<void>();
 
   /// Guards against concurrent _loadServers / _saveServers races.
   Completer<void>? _serversLoaded;
 
-  /// When [startApi] is false the local HTTP API server is NOT started.
-  /// Use this in the UI isolate where the API should live in the
-  /// long-lived background service isolate instead.
   ProxyService({bool startApi = true}) {
     _startHealthCheck();
+    _startStatsCollection();
     _listenNetworkChanges();
-    // _loadServers is async — we must ensure it completes BEFORE the API
-    // server starts accepting requests, otherwise requests see empty state.
     _serversLoaded = Completer<void>();
     _initSequence(startApi);
     _log('System', 'info', 'SSH Proxy Manager started (API: $startApi)');
   }
 
   Future<void> _initSequence(bool startApi) async {
+    await _loadApiAuth();
     await _loadServers();
+    await _loadProfiles();
     _serversLoaded!.complete();
     if (startApi) {
       await _initApiServer();
@@ -80,14 +123,11 @@ class ProxyService extends ChangeNotifier {
     }
   }
 
-  /// Initialize and start the local REST API server.
-  /// Called once from constructor; safe to call again (idempotent).
   Future<void> _initApiServer() async {
     try {
       _apiServer = LocalApiServer(this);
       _apiServer!.onReady = (port) {
         _log('System', 'info', 'API server ready on port $port');
-        // Update notification to show API is ready
         onNotificationUpdate?.call('API ready on port $port');
         if (!_apiReadyCompleter.isCompleted) {
           _apiReadyCompleter.complete();
@@ -103,9 +143,6 @@ class ProxyService extends ChangeNotifier {
     }
   }
 
-  /// Start or restart the API server. Safe to call multiple times.
-  /// Uses the same mutex inside LocalApiServer.start() so concurrent
-  /// calls are safe — they just await the in-progress start.
   Future<void> startApiServer() async {
     try {
       if (_apiServer == null) {
@@ -118,8 +155,6 @@ class ProxyService extends ChangeNotifier {
           }
         };
       }
-      // start() has its own mutex — safe to call even if _initApiServer()
-      // is already in progress. It will await the existing start.
       await _apiServer!.start();
     } catch (e) {
       debugPrint('❌ ProxyService.startApiServer error: $e');
@@ -128,7 +163,6 @@ class ProxyService extends ChangeNotifier {
 
   // ─── Logging ──────────────────────────────────────────────────────
 
-  /// Clear all logs. Use this instead of calling notifyListeners() externally.
   void clearLogs() {
     logs.clear();
     notifyListeners();
@@ -153,6 +187,13 @@ class ProxyService extends ChangeNotifier {
     onTunnelCountChanged?.call(count);
   }
 
+  /// Send a notification (via the background service notification callback).
+  void _sendNotification(String serverId, String message) {
+    final server = servers.where((s) => s.id == serverId).firstOrNull;
+    if (server != null && !server.notificationsEnabled) return;
+    onNotificationUpdate?.call(message);
+  }
+
   // ─── Server persistence ───────────────────────────────────────────
 
   Future<void> _loadServers() async {
@@ -161,7 +202,6 @@ class ProxyService extends ChangeNotifier {
       final data = prefs.getStringList('servers') ?? [];
       servers = data.map((s) => ServerConfig.fromJson(jsonDecode(s))).toList();
 
-      // Load secrets from secure storage
       for (final s in servers) {
         try {
           s.password =
@@ -172,7 +212,6 @@ class ProxyService extends ChangeNotifier {
               await _secureStorage.read(key: 'keyPassphrase_${s.id}');
         } catch (e) {
           debugPrint('Failed to read secrets for ${s.id}: $e');
-          // Continue with empty credentials — user can re-enter them
         }
       }
 
@@ -221,7 +260,6 @@ class ProxyService extends ChangeNotifier {
   }
 
   Future<void> addServer(ServerConfig s) async {
-    // Wait for initial load to finish so we don't race with _loadServers
     if (_serversLoaded != null && !_serversLoaded!.isCompleted) {
       await _serversLoaded!.future;
     }
@@ -229,16 +267,30 @@ class ProxyService extends ChangeNotifier {
     await _saveServers();
     await _saveSecrets(s);
     _log(s.name, 'info', 'Server added');
+    eventBroadcaster.emit('server_added', {'serverId': s.id, 'name': s.name});
     notifyListeners();
   }
 
   Future<void> updateServer(ServerConfig s) async {
     final i = servers.indexWhere((x) => x.id == s.id);
     if (i >= 0) {
+      final oldSocksPort = servers[i].socksPort;
       servers[i] = s;
       await _saveServers();
       await _saveSecrets(s);
       _log(s.name, 'info', 'Server updated');
+
+      // If tunnel is active and socksPort changed → disconnect + reconnect
+      if (oldSocksPort != s.socksPort && _clients.containsKey(s.id)) {
+        _log(s.name, 'info', 'SOCKS port changed, reconnecting...');
+        disconnectTunnel(s.id, reason: 'user_disconnect');
+        try {
+          await connectTunnel(s);
+        } catch (e) {
+          _log(s.name, 'error', 'Reconnect after port change failed: $e');
+        }
+      }
+
       notifyListeners();
     }
   }
@@ -246,18 +298,66 @@ class ProxyService extends ChangeNotifier {
   Future<void> deleteServer(String id) async {
     final name =
         servers.where((s) => s.id == id).map((s) => s.name).firstOrNull ?? id;
-    disconnectTunnel(id);
+    disconnectTunnel(id, reason: 'user_disconnect');
     servers.removeWhere((s) => s.id == id);
     await _saveServers();
     await _deleteSecrets(id);
     _log(name, 'info', 'Server deleted');
+    eventBroadcaster.emit('server_deleted', {'serverId': id});
     notifyListeners();
+  }
+
+  // ─── Profile persistence ──────────────────────────────────────────
+
+  Future<void> _loadProfiles() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final data = prefs.getStringList('profiles') ?? [];
+      profiles =
+          data.map((s) => QuickProfile.fromJson(jsonDecode(s))).toList();
+    } catch (e) {
+      debugPrint('Failed to load profiles: $e');
+    }
+  }
+
+  Future<void> _saveProfiles() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+        'profiles', profiles.map((p) => jsonEncode(p.toJson())).toList());
+  }
+
+  Future<void> addProfile(QuickProfile p) async {
+    profiles.add(p);
+    await _saveProfiles();
+    notifyListeners();
+  }
+
+  Future<void> deleteProfile(String id) async {
+    profiles.removeWhere((p) => p.id == id);
+    await _saveProfiles();
+    notifyListeners();
+  }
+
+  Future<void> connectProfile(String profileId) async {
+    final profile = profiles.where((p) => p.id == profileId).firstOrNull;
+    if (profile == null) throw Exception('Profile not found: $profileId');
+    final server =
+        servers.where((s) => s.id == profile.serverId).firstOrNull;
+    if (server == null) {
+      throw Exception('Server not found: ${profile.serverId}');
+    }
+    // Override socksPort from profile
+    final originalPort = server.socksPort;
+    server.socksPort = profile.socksPort;
+    try {
+      await connectTunnel(server);
+    } finally {
+      server.socksPort = originalPort;
+    }
   }
 
   // ─── Private key resolution ───────────────────────────────────────
 
-  /// Resolve the private key for a server.
-  /// If the key is in memory, use it. Otherwise, try to read from keyPath.
   Future<String?> _resolvePrivateKey(ServerConfig server) async {
     if (server.privateKey != null && server.privateKey!.isNotEmpty) {
       return server.privateKey;
@@ -267,7 +367,6 @@ class ProxyService extends ChangeNotifier {
         final file = File(server.keyPath!);
         if (await file.exists()) {
           final key = await file.readAsString();
-          // Cache in memory for future connections
           server.privateKey = key;
           return key;
         } else {
@@ -284,8 +383,6 @@ class ProxyService extends ChangeNotifier {
 
   // ─── Import / Export ──────────────────────────────────────────────
 
-  /// Export all servers as JSON.
-  /// When [includeKeys] is true, secrets (privateKey, password, keyPassphrase) are included.
   List<Map<String, dynamic>> exportServers({bool includeKeys = false}) {
     return servers.map((s) {
       final json = s.toJson();
@@ -304,13 +401,10 @@ class ProxyService extends ChangeNotifier {
     }).toList();
   }
 
-  /// Import servers from JSON list, merging by host+username+sshPort.
-  /// Returns count of newly added servers.
   int importServers(List<dynamic> jsonList) {
     int added = 0;
     for (final item in jsonList) {
       final data = item as Map<String, dynamic>;
-      // Check for duplicates by host + username + sshPort
       final exists = servers.any((s) =>
           s.host == data['host'] &&
           s.username == (data['username'] ?? '') &&
@@ -324,7 +418,10 @@ class ProxyService extends ChangeNotifier {
           username: data['username'] ?? '',
           password: data['password'] ?? '',
           socksPort: data['socksPort'] ?? 1080,
-          authType: data['authType'] ?? 'password',
+          authType: data['authType'] ??
+              (data['privateKey'] != null || data['keyPath'] != null
+                  ? 'key'
+                  : 'password'),
           privateKey: data['privateKey'],
           keyPassphrase: data['keyPassphrase'],
           keyPath: data['keyPath'],
@@ -344,10 +441,39 @@ class ProxyService extends ChangeNotifier {
     return added;
   }
 
+  // ─── Disconnect reason classification ─────────────────────────────
+
+  /// Classify an error into a specific disconnect reason.
+  String _classifyDisconnectReason(dynamic error) {
+    final msg = error.toString().toLowerCase();
+    if (msg.contains('authentication') ||
+        msg.contains('auth') && msg.contains('fail') ||
+        msg.contains('permission denied') ||
+        msg.contains('publickey')) {
+      return 'auth_failed';
+    }
+    if (msg.contains('connection refused') ||
+        msg.contains('errno = 111') ||
+        msg.contains('connectionrefused')) {
+      return 'connection_refused';
+    }
+    if (msg.contains('could not resolve') ||
+        msg.contains('host not found') ||
+        msg.contains('dns') ||
+        msg.contains('getaddrinfo') ||
+        msg.contains('nodename nor servname')) {
+      return 'dns_error';
+    }
+    if (msg.contains('keepalive') || msg.contains('keep-alive') || msg.contains('timed out')) {
+      return 'keepalive_timeout';
+    }
+    // Generic SSH error
+    return 'ssh_error: ${error.toString().length > 100 ? error.toString().substring(0, 100) : error}';
+  }
+
   // ─── SOCKS5 Tunnel ───────────────────────────────────────────────
 
   Future<void> connectTunnel(ServerConfig server) async {
-    // Wait for initial load to finish
     if (_serversLoaded != null && !_serversLoaded!.isCompleted) {
       await _serversLoaded!.future;
     }
@@ -391,10 +517,14 @@ class ProxyService extends ChangeNotifier {
       _log(server.name, 'connected',
           'SSH authenticated (${server.authType})');
 
-      // Bind local SOCKS5 server
       final serverSocket =
           await ServerSocket.bind(InternetAddress.anyIPv4, server.socksPort);
       _serverSockets[server.id] = serverSocket;
+
+      final hasProxyAuth = server.proxyUsername != null &&
+          server.proxyUsername!.isNotEmpty &&
+          server.proxyPassword != null &&
+          server.proxyPassword!.isNotEmpty;
 
       final tunnel = ActiveTunnel(
         serverId: server.id,
@@ -402,12 +532,12 @@ class ProxyService extends ChangeNotifier {
         socksPort: server.socksPort,
         startedAt: DateTime.now(),
         proxyType: 'SOCKS5',
-        authType: 'no-auth',
+        authType: hasProxyAuth ? 'username/password' : 'no-auth',
       );
 
       serverSocket.listen(
         (Socket localSocket) {
-          _handleSocksConnection(localSocket, client, server.name, tunnel);
+          _handleSocksConnection(localSocket, client, server, tunnel);
         },
         onError: (e) {
           _log(server.name, 'error', 'ServerSocket error: $e');
@@ -423,36 +553,59 @@ class ProxyService extends ChangeNotifier {
       _log(server.name, 'connected',
           'SOCKS5 proxy listening on 0.0.0.0:${server.socksPort}');
 
-      // Listen for unexpected SSH disconnection
       _listenForDisconnect(server.id, client, server.name);
 
-      // Reset reconnect attempts on successful connection
+      // Check if this is a reconnect
+      final downTime = _disconnectTimes.remove(server.id);
+      if (downTime != null) {
+        final downSecs = DateTime.now().difference(downTime).inSeconds;
+        _sendNotification(server.id,
+            '✅ ${server.name} reconnected (was down ${downSecs}s)');
+      }
+
       _reconnectAttempts.remove(server.id);
+
+      eventBroadcaster.emit('connected', {
+        'serverId': server.id,
+        'name': server.name,
+        'socksPort': server.socksPort,
+      });
 
       _notifyTunnelCount();
       notifyListeners();
+    } on SocketException catch (e) {
+      final reason = _classifyDisconnectReason(e);
+      _log(server.name, 'error', 'Connection failed: $reason');
+      eventBroadcaster.emit('error', {
+        'serverId': server.id,
+        'message': reason,
+      });
+      rethrow;
     } catch (e) {
-      _log(server.name, 'error', 'Connection failed: $e');
+      final reason = _classifyDisconnectReason(e);
+      _log(server.name, 'error', 'Connection failed: $reason');
+      eventBroadcaster.emit('error', {
+        'serverId': server.id,
+        'message': reason,
+      });
       rethrow;
     }
   }
 
-  /// Listen to SSHClient.done to detect unexpected disconnections.
   void _listenForDisconnect(
       String serverId, SSHClient client, String serverName) {
     client.done.then((_) {
       if (!_disconnecting.contains(serverId)) {
-        _handleUnexpectedDisconnect(serverId, 'SSH connection closed');
+        _handleUnexpectedDisconnect(serverId, 'ssh_error: connection closed');
       }
     }).catchError((e) {
       if (!_disconnecting.contains(serverId)) {
-        _handleUnexpectedDisconnect(serverId, 'SSH error: $e');
+        final reason = _classifyDisconnectReason(e);
+        _handleUnexpectedDisconnect(serverId, reason);
       }
     });
   }
 
-  /// Handle an unexpected disconnection (not user-initiated).
-  /// Cleans up resources and schedules auto-reconnect if enabled.
   void _handleUnexpectedDisconnect(String serverId, String reason) {
     if (_disconnecting.contains(serverId)) return;
     if (_activeReconnects.contains(serverId)) return;
@@ -462,21 +615,48 @@ class ProxyService extends ChangeNotifier {
     _cleanupConnection(serverId);
     activeTunnels.removeWhere((t) => t.serverId == serverId);
 
+    // Record disconnect time for downtime tracking
+    _disconnectTimes[serverId] = DateTime.now();
+
+    // Record disconnect in stats
+    if (tunnel != null) {
+      statsDb.insertDataPoint(
+        serverId: serverId,
+        uptime: tunnel.uptime.inSeconds,
+        bytesIn: tunnel.bytesIn,
+        bytesOut: tunnel.bytesOut,
+        latencyMs: tunnel.latencyMs,
+        reconnectCount: tunnel.reconnectCount,
+        disconnectReason: reason,
+      );
+    }
+
     final server = servers.where((s) => s.id == serverId).firstOrNull;
     if (server != null) {
       _log(server.name, 'disconnected', reason);
+      _sendNotification(serverId,
+          '⚠️ ${server.name} disconnected: $reason');
+
+      eventBroadcaster.emit('disconnected', {
+        'serverId': serverId,
+        'reason': reason,
+      });
+
       if (server.autoReconnect) {
         _scheduleReconnect(server, previousTunnel: tunnel);
       }
     } else if (tunnel != null) {
       _log(tunnel.serverName, 'disconnected', reason);
+      eventBroadcaster.emit('disconnected', {
+        'serverId': serverId,
+        'reason': reason,
+      });
     }
 
     _notifyTunnelCount();
     notifyListeners();
   }
 
-  /// Clean up SSH client and server socket for a given server ID.
   void _cleanupConnection(String serverId) {
     _serverSockets[serverId]?.close();
     _serverSockets.remove(serverId);
@@ -486,11 +666,11 @@ class ProxyService extends ChangeNotifier {
     _clients.remove(serverId);
   }
 
-  /// Schedule an auto-reconnect attempt with exponential backoff.
   void _scheduleReconnect(ServerConfig server,
       {ActiveTunnel? previousTunnel}) {
     final attempts = _reconnectAttempts[server.id] ?? 0;
     final delaySec = min(pow(2, attempts).toInt(), 30);
+    final nextRetryMs = delaySec * 1000;
 
     _reconnectTimers[server.id]?.cancel();
     _activeReconnects.add(server.id);
@@ -498,11 +678,19 @@ class ProxyService extends ChangeNotifier {
     _log(server.name, 'info',
         'Auto-reconnecting in ${delaySec}s (attempt ${attempts + 1})...');
 
+    _sendNotification(server.id,
+        '🔄 ${server.name} reconnecting (attempt ${attempts + 1})...');
+
+    eventBroadcaster.emit('reconnecting', {
+      'serverId': server.id,
+      'attempt': attempts + 1,
+      'nextRetryMs': nextRetryMs,
+    });
+
     _reconnectTimers[server.id] =
         Timer(Duration(seconds: delaySec), () async {
       try {
         await connectTunnel(server);
-        // Restore counters from previous tunnel
         final newTunnel = activeTunnels
             .where((t) => t.serverId == server.id)
             .firstOrNull;
@@ -519,30 +707,38 @@ class ProxyService extends ChangeNotifier {
         _reconnectAttempts[server.id] = attempts + 1;
         _activeReconnects.remove(server.id);
         _log(server.name, 'error', 'Reconnect failed: $e');
-        // Schedule next attempt with longer delay
         _scheduleReconnect(server, previousTunnel: previousTunnel);
       }
     });
   }
 
-  /// Handle a single SOCKS5 client connection.
+  /// Handle a single SOCKS5 client connection with optional proxy auth (#7).
   Future<void> _handleSocksConnection(Socket localSocket, SSHClient client,
-      String serverName, ActiveTunnel tunnel) async {
+      ServerConfig server, ActiveTunnel tunnel) async {
     final greetingCompleter = Completer<Uint8List>();
+    final authCompleter = Completer<Uint8List>();
     final requestCompleter = Completer<Uint8List>();
     SSHForwardChannel? forwardChannel;
-    int phase = 0; // 0=greeting, 1=request, 2=forwarding
+
+    final hasProxyAuth = server.proxyUsername != null &&
+        server.proxyUsername!.isNotEmpty &&
+        server.proxyPassword != null &&
+        server.proxyPassword!.isNotEmpty;
+
+    int phase = 0; // 0=greeting, 1=auth(optional), 2=request, 3=forwarding
 
     final sub = localSocket.listen(
       (Uint8List data) {
         if (phase == 0) {
-          phase = 1;
+          phase = hasProxyAuth ? 1 : 2;
           if (!greetingCompleter.isCompleted) greetingCompleter.complete(data);
         } else if (phase == 1) {
           phase = 2;
+          if (!authCompleter.isCompleted) authCompleter.complete(data);
+        } else if (phase == 2) {
+          phase = 3;
           if (!requestCompleter.isCompleted) requestCompleter.complete(data);
         } else {
-          // Phase 2: forward data to SSH channel
           try {
             tunnel.bytesOut += data.length;
             forwardChannel?.sink.add(data);
@@ -552,6 +748,9 @@ class ProxyService extends ChangeNotifier {
       onError: (e) {
         if (!greetingCompleter.isCompleted) {
           greetingCompleter.completeError('Socket error: $e');
+        }
+        if (!authCompleter.isCompleted) {
+          authCompleter.completeError('Socket error: $e');
         }
         if (!requestCompleter.isCompleted) {
           requestCompleter.completeError('Socket error: $e');
@@ -563,6 +762,9 @@ class ProxyService extends ChangeNotifier {
       onDone: () {
         if (!greetingCompleter.isCompleted) {
           greetingCompleter.completeError('Connection closed');
+        }
+        if (!authCompleter.isCompleted) {
+          authCompleter.completeError('Connection closed');
         }
         if (!requestCompleter.isCompleted) {
           requestCompleter.completeError('Connection closed');
@@ -580,13 +782,50 @@ class ProxyService extends ChangeNotifier {
         localSocket.destroy();
         return;
       }
-      // Respond: version=5, method=0 (no auth)
-      localSocket.add([0x05, 0x00]);
 
-      // ── Phase 1: SOCKS5 CONNECT request ──
+      if (hasProxyAuth) {
+        // Respond: version=5, method=2 (username/password)
+        localSocket.add([0x05, 0x02]);
+
+        // ── Phase 1: Username/password auth ──
+        final authData = await authCompleter.future;
+        // RFC 1929: VER(1) ULEN(1) UNAME(ULEN) PLEN(1) PASSWD(PLEN)
+        if (authData.length < 3 || authData[0] != 0x01) {
+          localSocket.add([0x01, 0x01]); // auth failure
+          localSocket.destroy();
+          return;
+        }
+        final ulen = authData[1];
+        if (authData.length < 3 + ulen) {
+          localSocket.add([0x01, 0x01]);
+          localSocket.destroy();
+          return;
+        }
+        final username = String.fromCharCodes(authData.sublist(2, 2 + ulen));
+        final plen = authData[2 + ulen];
+        if (authData.length < 3 + ulen + plen) {
+          localSocket.add([0x01, 0x01]);
+          localSocket.destroy();
+          return;
+        }
+        final password = String.fromCharCodes(
+            authData.sublist(3 + ulen, 3 + ulen + plen));
+
+        if (username != server.proxyUsername ||
+            password != server.proxyPassword) {
+          localSocket.add([0x01, 0x01]); // auth failure
+          localSocket.destroy();
+          return;
+        }
+        localSocket.add([0x01, 0x00]); // auth success
+      } else {
+        // Respond: version=5, method=0 (no auth)
+        localSocket.add([0x05, 0x00]);
+      }
+
+      // ── Phase 2: SOCKS5 CONNECT request ──
       final request = await requestCompleter.future;
       if (request.length < 4 || request[0] != 0x05 || request[1] != 0x01) {
-        // Not a CONNECT command
         localSocket.add([0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
         localSocket.destroy();
         return;
@@ -597,7 +836,6 @@ class ProxyService extends ChangeNotifier {
 
       final addrType = request[3];
       if (addrType == 0x01) {
-        // IPv4
         if (request.length < 10) {
           localSocket.destroy();
           return;
@@ -606,7 +844,6 @@ class ProxyService extends ChangeNotifier {
             '${request[4]}.${request[5]}.${request[6]}.${request[7]}';
         targetPort = (request[8] << 8) | request[9];
       } else if (addrType == 0x03) {
-        // Domain name
         final domainLen = request[4];
         if (request.length < 5 + domainLen + 2) {
           localSocket.destroy();
@@ -616,13 +853,11 @@ class ProxyService extends ChangeNotifier {
         targetPort =
             (request[5 + domainLen] << 8) | request[6 + domainLen];
       } else if (addrType == 0x04) {
-        // IPv6 — 16 bytes
         if (request.length < 22) {
           localSocket.destroy();
           return;
         }
         final bytes = request.sublist(4, 20);
-        // Format as proper IPv6 (pairs of bytes as hex groups)
         final groups = <String>[];
         for (int i = 0; i < 16; i += 2) {
           groups.add(
@@ -631,21 +866,15 @@ class ProxyService extends ChangeNotifier {
         targetHost = groups.join(':');
         targetPort = (request[20] << 8) | request[21];
       } else {
-        // Address type not supported
         localSocket.add([0x05, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
         localSocket.destroy();
         return;
       }
 
-      // ── Open SSH direct-tcpip channel ──
       forwardChannel = await client.forwardLocal(targetHost, targetPort);
 
-      // Send SOCKS5 success: ver=5, rep=0 (succeeded), rsv=0, atyp=1 (IPv4),
-      // BND.ADDR=0.0.0.0, BND.PORT=0
       localSocket.add([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
 
-      // ── Phase 2: bidirectional forwarding ──
-      // SSH → local
       forwardChannel.stream.listen(
         (data) {
           try {
@@ -664,10 +893,7 @@ class ProxyService extends ChangeNotifier {
           } catch (_) {}
         },
       );
-
-      // local → SSH is handled by the subscription's phase==2 branch above
     } catch (e) {
-      // Send SOCKS5 general failure
       try {
         localSocket.add([0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
       } catch (_) {}
@@ -678,10 +904,9 @@ class ProxyService extends ChangeNotifier {
   }
 
   /// Disconnect a tunnel (user-initiated or with specific reason).
-  void disconnectTunnel(String serverId, {String reason = 'user disconnect'}) {
+  void disconnectTunnel(String serverId, {String reason = 'user_disconnect'}) {
     _disconnecting.add(serverId);
 
-    // Cancel any pending reconnect for this server
     _reconnectTimers[serverId]?.cancel();
     _reconnectTimers.remove(serverId);
     _reconnectAttempts.remove(serverId);
@@ -694,8 +919,7 @@ class ProxyService extends ChangeNotifier {
     activeTunnels.removeWhere((t) => t.serverId == serverId);
     try {
       final s = servers.firstWhere((x) => x.id == serverId);
-      // Only mark as disabled for user-initiated disconnects
-      if (reason == 'user disconnect') {
+      if (reason == 'user_disconnect') {
         s.isEnabled = false;
         _saveServers();
       }
@@ -705,6 +929,11 @@ class ProxyService extends ChangeNotifier {
         _log(tunnel.serverName, 'disconnected', reason);
       }
     }
+
+    eventBroadcaster.emit('disconnected', {
+      'serverId': serverId,
+      'reason': reason,
+    });
 
     _disconnecting.remove(serverId);
     _notifyTunnelCount();
@@ -724,16 +953,13 @@ class ProxyService extends ChangeNotifier {
       final client = _clients[tunnel.serverId];
 
       if (client == null || client.isClosed) {
-        // Safety net: client.done should normally handle this, but just in case
         _handleUnexpectedDisconnect(
-            tunnel.serverId, 'Health check: connection lost');
+            tunnel.serverId, 'keepalive_timeout');
         continue;
       }
 
-      // Connection is alive — update health info
       tunnel.lastKeepaliveAt = DateTime.now();
 
-      // Try to measure latency with a lightweight command
       try {
         final sw = Stopwatch()..start();
         final session = await client
@@ -743,16 +969,48 @@ class ProxyService extends ChangeNotifier {
         sw.stop();
         tunnel.latencyMs = sw.elapsedMilliseconds;
       } catch (e) {
-        // Latency measurement failed — not critical, keepalive handles liveness
         tunnel.latencyMs = null;
         debugPrint('Health check latency probe failed for '
             '${tunnel.serverName}: $e');
       }
+
+      // Broadcast stats event
+      eventBroadcaster.emit('stats', {
+        'serverId': tunnel.serverId,
+        'uptime': tunnel.uptime.inSeconds,
+        'bytesIn': tunnel.bytesIn,
+        'bytesOut': tunnel.bytesOut,
+        'latencyMs': tunnel.latencyMs,
+      });
     }
     notifyListeners();
   }
 
-  // ─── Network changes (connectivity_plus v6) ──────────────────────
+  // ─── Stats collection (every 5 min) ──────────────────────────────
+
+  void _startStatsCollection() {
+    _statsCollectionTimer =
+        Timer.periodic(const Duration(minutes: 5), (_) => _collectStats());
+    // Also schedule cleanup once
+    statsDb.cleanup();
+  }
+
+  Future<void> _collectStats() async {
+    for (final tunnel in activeTunnels) {
+      if (tunnel.isExternal) continue;
+      await statsDb.insertDataPoint(
+        serverId: tunnel.serverId,
+        uptime: tunnel.uptime.inSeconds,
+        bytesIn: tunnel.bytesIn,
+        bytesOut: tunnel.bytesOut,
+        latencyMs: tunnel.latencyMs,
+        reconnectCount: tunnel.reconnectCount,
+      );
+    }
+    await statsDb.cleanup();
+  }
+
+  // ─── Network changes ─────────────────────────────────────────────
 
   void _listenNetworkChanges() {
     _connectivitySub = Connectivity()
@@ -760,6 +1018,15 @@ class ProxyService extends ChangeNotifier {
         .listen((List<ConnectivityResult> results) async {
       if (results.isNotEmpty &&
           !results.contains(ConnectivityResult.none)) {
+        // Mark currently active tunnels as network_change disconnects
+        for (final tunnel in List<ActiveTunnel>.from(activeTunnels)) {
+          if (!tunnel.isExternal && _clients.containsKey(tunnel.serverId)) {
+            final client = _clients[tunnel.serverId];
+            if (client != null && client.isClosed) {
+              _handleUnexpectedDisconnect(tunnel.serverId, 'network_change');
+            }
+          }
+        }
         _log('System', 'info', 'Network restored, reconnecting...');
         await Future.delayed(const Duration(seconds: 3));
         await _reconnectEnabledTunnels();
@@ -767,8 +1034,6 @@ class ProxyService extends ChangeNotifier {
     });
   }
 
-  /// Reconnect servers that are either enabled (were active) or marked
-  /// for auto-connect on startup.
   Future<void> _reconnectEnabledTunnels() async {
     for (final server
         in servers.where((s) => s.isEnabled || s.connectOnStartup)) {
@@ -784,12 +1049,9 @@ class ProxyService extends ChangeNotifier {
 
   // ─── Port scanning ────────────────────────────────────────────────
 
-  /// Detect proxy type and auth for a given port.
-  /// Sockets are properly closed in finally blocks to prevent resource leaks.
   Future<Map<String, String>> _detectProxyInfo(int port) async {
     final info = <String, String>{};
 
-    // Try SOCKS5 handshake
     Socket? sock;
     try {
       sock = await Socket.connect('127.0.0.1', port,
@@ -813,7 +1075,6 @@ class ProxyService extends ChangeNotifier {
       } catch (_) {}
     }
 
-    // If not SOCKS, try HTTP proxy
     if (!info.containsKey('type')) {
       Socket? httpSock;
       try {
@@ -906,8 +1167,10 @@ class ProxyService extends ChangeNotifier {
   @override
   void dispose() {
     _healthCheckTimer?.cancel();
+    _statsCollectionTimer?.cancel();
     _connectivitySub?.cancel();
     _apiServer?.stop();
+    eventBroadcaster.closeAll();
     for (final timer in _reconnectTimers.values) {
       timer.cancel();
     }

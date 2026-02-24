@@ -128,6 +128,50 @@ if [ -n "${SERVER_ID:-}" ]; then
   } || fail "delete server" "HTTP error"
 fi
 
+# --- Test 10b: PUT /servers/{id} (update) ---
+echo "📍 Test: PUT /servers/{id} (add then update)"
+add2_resp=$(assert_json "servers-add2" "$API/servers/add" POST '{"name":"UpdateTest","host":"10.0.0.1","username":"user2","password":"pass2","socksPort":2080}') && {
+  UPD_ID=$(echo "$add2_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['id'])" 2>/dev/null)
+  if [ -n "${UPD_ID:-}" ]; then
+    upd_resp=$(curl -sf -X PUT -H "Content-Type: application/json" -d '{"name":"UpdatedName","socksPort":3080}' "$API/servers/$UPD_ID" 2>&1) && {
+      echo "$upd_resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['success']==True" 2>/dev/null \
+        && pass "PUT /servers/{id} update works" \
+        || fail "PUT update" "unexpected: $upd_resp"
+    } || fail "PUT update" "HTTP error"
+    # Verify updated
+    srv_resp=$(curl -sf "$API/servers" 2>&1)
+    echo "$srv_resp" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+s=[x for x in d['servers'] if x['id']=='$UPD_ID'][0]
+assert s['name']=='UpdatedName', f'name={s[\"name\"]}'
+assert s['socksPort']==3080, f'port={s[\"socksPort\"]}'
+" 2>/dev/null \
+      && pass "PUT update persisted correctly" \
+      || fail "PUT update verify" "values not updated"
+    # Cleanup
+    curl -sf -X DELETE "$API/servers/$UPD_ID" >/dev/null 2>&1 || true
+  else
+    fail "PUT update" "no ID from add"
+  fi
+} || true
+
+# --- Test 11: GET /stats/{id} ---
+echo "📍 Test: GET /stats/{id}"
+resp=$(assert_json "stats" "$API/stats/nonexistent?period=1h") && {
+  echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'totalUptime' in d and 'dataPoints' in d" 2>/dev/null \
+    && pass "/stats returns expected fields" \
+    || fail "/stats" "missing fields: $resp"
+} || true
+
+# --- Test 12: GET /profiles ---
+echo "📍 Test: GET /profiles"
+resp=$(assert_json "profiles" "$API/profiles") && {
+  echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert isinstance(d['profiles'], list)" 2>/dev/null \
+    && pass "/profiles returns list" \
+    || fail "/profiles" "unexpected format"
+} || true
+
 # --- Summary ---
 echo ""
 echo "============================================"

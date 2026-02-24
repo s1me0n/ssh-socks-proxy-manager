@@ -1,7 +1,7 @@
 name: ssh_socks_proxy
 description: SSH SOCKS5 Proxy Manager for Android
 publish_to: 'none'
-version: 3.1.0+4
+version: 5.0.0+5
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -15,6 +15,9 @@ dependencies:
   connectivity_plus: ^6.0.0
   provider: ^6.1.0
   flutter_secure_storage: ^9.0.0
+  sqflite: ^2.3.0
+  path: ^1.8.3
+  web_socket_channel: ^2.4.0
 
 dev_dependencies:
   flutter_test:

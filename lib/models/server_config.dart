@@ -1,18 +1,21 @@
 class ServerConfig {
   final String id;
-  final String name;
-  final String host;
-  final int sshPort;
-  final String username;
+  String name;
+  String host;
+  int sshPort;
+  String username;
   String password; // loaded from secure storage
-  final int socksPort;
+  int socksPort;
   bool isEnabled;
-  final String authType; // 'password' or 'key'
+  String authType; // 'password' or 'key'
   String? privateKey; // PEM format, loaded from secure storage
   String? keyPassphrase; // optional passphrase for encrypted keys
   String? keyPath; // path to private key file on device
   bool autoReconnect; // auto-reconnect on unexpected disconnect (default: true)
   bool connectOnStartup; // auto-connect when app starts (default: false)
+  bool notificationsEnabled; // per-server disconnect/reconnect notifications
+  String? proxyUsername; // SOCKS5 proxy auth username
+  String? proxyPassword; // SOCKS5 proxy auth password
 
   ServerConfig({
     required this.id,
@@ -29,6 +32,9 @@ class ServerConfig {
     this.keyPath,
     this.autoReconnect = true,
     this.connectOnStartup = false,
+    this.notificationsEnabled = true,
+    this.proxyUsername,
+    this.proxyPassword,
   });
 
   /// Serialize to JSON — secrets (password, privateKey, keyPassphrase) are NOT included.
@@ -45,6 +51,9 @@ class ServerConfig {
         'keyPath': keyPath,
         'autoReconnect': autoReconnect,
         'connectOnStartup': connectOnStartup,
+        'notificationsEnabled': notificationsEnabled,
+        'proxyUsername': proxyUsername,
+        'proxyPassword': proxyPassword,
       };
 
   factory ServerConfig.fromJson(Map<String, dynamic> j) => ServerConfig(
@@ -60,5 +69,8 @@ class ServerConfig {
         keyPath: j['keyPath'],
         autoReconnect: j['autoReconnect'] ?? true,
         connectOnStartup: j['connectOnStartup'] ?? false,
+        notificationsEnabled: j['notificationsEnabled'] ?? true,
+        proxyUsername: j['proxyUsername'],
+        proxyPassword: j['proxyPassword'],
       );
 }

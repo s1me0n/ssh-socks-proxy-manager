@@ -15,6 +15,77 @@ class SettingsTab extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // ─── API Authentication section ──────────────────────
+          const Text('API Authentication',
+              style: TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          const Text(
+            'Protect the REST API with a Bearer token. '
+            '/ping always works without auth.',
+            style: TextStyle(fontSize: 13, color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
+          SwitchListTile(
+            title: const Text('Enable API Authentication'),
+            subtitle: Text(svc.apiAuthEnabled ? 'Enabled' : 'Disabled',
+                style: const TextStyle(fontSize: 12)),
+            value: svc.apiAuthEnabled,
+            onChanged: (v) => svc.setApiAuthEnabled(v),
+          ),
+          if (svc.apiToken != null) ...[
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('API Token',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    SelectableText(
+                      svc.apiToken!,
+                      style: const TextStyle(
+                          fontFamily: 'monospace', fontSize: 12),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.copy, size: 16),
+                          label: const Text('Copy'),
+                          onPressed: () {
+                            Clipboard.setData(
+                                ClipboardData(text: svc.apiToken!));
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('Token copied to clipboard')),
+                            );
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.refresh, size: 16),
+                          label: const Text('Regenerate'),
+                          onPressed: () async {
+                            await svc.regenerateApiToken();
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                    content: Text('Token regenerated')),
+                              );
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 32),
+
           // ─── Import / Export section ──────────────────────────
           const Text('Server Import / Export',
               style: TextStyle(
@@ -98,7 +169,7 @@ class SettingsTab extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('SSH SOCKS Proxy Manager v3.0.0'),
+                  const Text('SSH SOCKS Proxy Manager v5.0.0'),
                   const SizedBox(height: 8),
                   Text('Servers: ${svc.servers.length}',
                       style: const TextStyle(color: Colors.grey)),
@@ -106,6 +177,8 @@ class SettingsTab extends StatelessWidget {
                       'Active tunnels: ${svc.activeTunnels.where((t) => !t.isExternal).length}',
                       style: const TextStyle(color: Colors.grey)),
                   Text('Log entries: ${svc.logs.length}',
+                      style: const TextStyle(color: Colors.grey)),
+                  Text('Profiles: ${svc.profiles.length}',
                       style: const TextStyle(color: Colors.grey)),
                 ],
               ),
@@ -122,6 +195,7 @@ class SettingsTab extends StatelessWidget {
                       style: TextStyle(fontWeight: FontWeight.w600)),
                   SizedBox(height: 8),
                   Text('• Full SOCKS5 proxy (IPv4, IPv6, domain)'),
+                  Text('• SOCKS5 proxy authentication'),
                   Text('• SSH password & key authentication'),
                   Text('• Ed25519 & RSA key support'),
                   Text('• SSH keepalive (15s interval)'),
@@ -131,10 +205,13 @@ class SettingsTab extends StatelessWidget {
                   Text('• Background foreground service'),
                   Text('• Auto-reconnect on network change'),
                   Text('• Health check every 30s'),
-                  Text('• REST API on port 7070'),
+                  Text('• REST API with Bearer token auth'),
+                  Text('• WebSocket real-time events'),
+                  Text('• Connection stats history (SQLite)'),
+                  Text('• Quick-connect profiles'),
+                  Text('• Disconnect/reconnect notifications'),
                   Text('• Encrypted secret storage'),
                   Text('• Per-tunnel bandwidth stats'),
-                  Text('• Key file path support'),
                   Text('• Export/import with optional keys'),
                   Text('• Connection logging with reasons'),
                   Text('• Boot auto-start'),

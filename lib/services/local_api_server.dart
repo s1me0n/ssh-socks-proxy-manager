@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import '../models/server_config.dart';
+import '../models/quick_profile.dart';
 import '../utils/id_generator.dart';
 import 'proxy_service.dart';
 
@@ -18,34 +19,23 @@ class LocalApiServer {
   Completer<void>? _startCompleter;
   DateTime? _startTime;
 
-  /// Returns the port the server is actually listening on (or null).
   int? get activePort => _activePort;
-
-  /// Whether the server is currently running.
   bool get isRunning => _running;
-
-  /// Callback fired when server is ready (port is bound and listening).
   void Function(int port)? onReady;
 
   LocalApiServer(this.proxyService);
 
-  /// Start the API server with retry logic and mutex protection.
-  /// Safe to call concurrently — only the first call does actual work;
-  /// subsequent calls await the same Future.
   Future<void> start() async {
     if (_running) {
       debugPrint(
           '⚠️ API server already running on port $_activePort, skipping duplicate start');
       return;
     }
-
-    // Mutex: if another start() is already in progress, wait for it
     if (_startCompleter != null && !_startCompleter!.isCompleted) {
       debugPrint('⏳ API server start already in progress, waiting...');
       await _startCompleter!.future;
       return;
     }
-
     _startCompleter = Completer<void>();
     try {
       await _startWithRetry();
@@ -57,13 +47,9 @@ class LocalApiServer {
     }
   }
 
-  /// Internal: attempt to bind with retries on both primary and fallback ports.
   Future<void> _startWithRetry() async {
     for (int attempt = 1; attempt <= _maxRetries; attempt++) {
-      // Try primary port
       try {
-        debugPrint(
-            '🔌 Starting API server on 0.0.0.0:$port (attempt $attempt/$_maxRetries)...');
         _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
         _activePort = port;
         _running = true;
@@ -73,11 +59,7 @@ class LocalApiServer {
       } catch (e) {
         debugPrint('❌ Failed to bind port $port (attempt $attempt): $e');
       }
-
-      // Try fallback port
       try {
-        debugPrint(
-            '🔌 Trying fallback port $_fallbackPort (attempt $attempt/$_maxRetries)...');
         _server = await HttpServer.bind(
             InternetAddress.anyIPv4, _fallbackPort);
         _activePort = _fallbackPort;
@@ -89,24 +71,18 @@ class LocalApiServer {
         debugPrint(
             '❌ Failed to bind port $_fallbackPort (attempt $attempt): $e');
       }
-
-      // Wait before retrying (except on last attempt)
       if (attempt < _maxRetries) {
-        debugPrint('⏳ Retrying in ${_retryDelay.inSeconds}s...');
         await Future.delayed(_retryDelay);
       }
     }
-
-    debugPrint('❌ API server completely failed after $_maxRetries attempts');
     _running = false;
   }
 
   void _attachListener() {
     _server!.listen(_handleRequest,
         onError: (e) => debugPrint('❌ API stream error: $e'), onDone: () {
-      debugPrint('⚠️ API server stream closed on port $_activePort');
       _running = false;
-      _startCompleter = null; // Allow restart
+      _startCompleter = null;
     });
   }
 
@@ -116,13 +92,10 @@ class LocalApiServer {
     debugPrint('✅ API server started successfully on port $p');
     final ip = await getLocalIp();
     debugPrint('🌐 Device IP: $ip — access via http://$ip:$p');
-    debugPrint('🌐 Termux: curl http://127.0.0.1:$p/help');
-    // Notify listeners (e.g. ProxyService → background notification)
     onReady?.call(p);
   }
 
   Future<void> stop() async {
-    debugPrint('🛑 Stopping API server on port $_activePort...');
     try {
       await _server?.close(force: true);
     } catch (e) {
@@ -135,8 +108,6 @@ class LocalApiServer {
     _startCompleter = null;
   }
 
-  /// Get the API listen address for display.
-  /// Returns the first non-loopback IPv4 address found on the device.
   static Future<String> getLocalIp() async {
     try {
       final interfaces = await NetworkInterface.list(
@@ -145,9 +116,7 @@ class LocalApiServer {
       );
       for (final iface in interfaces) {
         for (final addr in iface.addresses) {
-          if (!addr.isLoopback) {
-            return addr.address;
-          }
+          if (!addr.isLoopback) return addr.address;
         }
       }
     } catch (e) {
@@ -156,16 +125,30 @@ class LocalApiServer {
     return '127.0.0.1';
   }
 
+  /// Check API token authentication. Returns true if authorized.
+  bool _checkAuth(HttpRequest req) {
+    if (!proxyService.apiAuthEnabled) return true;
+
+    // Extract token from header or query param
+    final authHeader = req.headers.value('authorization');
+    String? token;
+    if (authHeader != null && authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7);
+    }
+    token ??= req.uri.queryParameters['token'];
+
+    return token != null && token == proxyService.apiToken;
+  }
+
   Future<void> _handleRequest(HttpRequest req) async {
     req.response.headers.set('Content-Type', 'application/json');
     req.response.headers.set('Access-Control-Allow-Origin', '*');
 
-    // Handle CORS preflight
     if (req.method == 'OPTIONS') {
       req.response.headers
-          .set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+          .set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
       req.response.headers
-          .set('Access-Control-Allow-Headers', 'Content-Type');
+          .set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
       req.response.statusCode = 204;
       try {
         await req.response.close();
@@ -177,7 +160,33 @@ class LocalApiServer {
     final method = req.method;
 
     try {
-      // Lightweight readiness probe — returns instantly, minimal payload.
+      // ─── WebSocket upgrade (/ws/events) ──────────────────────
+      if (path == '/ws/events' && WebSocketTransformer.isUpgradeRequest(req)) {
+        // Check auth for WebSocket
+        if (proxyService.apiAuthEnabled) {
+          final token = req.uri.queryParameters['token'];
+          if (token == null || token != proxyService.apiToken) {
+            req.response.statusCode = 401;
+            await _writeJson(req, {'error': 'Unauthorized'});
+            return;
+          }
+        }
+        final ws = await WebSocketTransformer.upgrade(req);
+        proxyService.eventBroadcaster.addClient(ws);
+        // Handle ping/pong heartbeat
+        ws.listen(
+          (data) {
+            if (data == 'ping') {
+              ws.add('pong');
+            }
+          },
+          onDone: () {},
+          onError: (_) {},
+        );
+        return;
+      }
+
+      // /ping works without auth
       if (path == '/ping' && method == 'GET') {
         await _writeJson(req, {
           'pong': true,
@@ -187,24 +196,21 @@ class LocalApiServer {
               : 0,
         });
         return;
-      } else if (path == '/status' && method == 'GET') {
+      }
+
+      // All other endpoints require auth
+      if (!_checkAuth(req)) {
+        req.response.statusCode = 401;
+        await _writeJson(req, {'error': 'Unauthorized', 'hint': 'Provide Authorization: Bearer <token> header or ?token=<token> query param'});
+        return;
+      }
+
+      if (path == '/status' && method == 'GET') {
         await _writeJson(req, {
           'status': 'running',
-          'version': '4.1.0',
+          'version': '5.0.0',
           'servers': proxyService.servers
-              .map((s) => {
-                    'id': s.id,
-                    'name': s.name,
-                    'host': s.host,
-                    'sshPort': s.sshPort,
-                    'socksPort': s.socksPort,
-                    'username': s.username,
-                    'authType': s.authType,
-                    'enabled': s.isEnabled,
-                    'autoReconnect': s.autoReconnect,
-                    'connectOnStartup': s.connectOnStartup,
-                    'keyPath': s.keyPath,
-                  })
+              .map((s) => _serverToJson(s))
               .toList(),
           'activeTunnels': proxyService.activeTunnels
               .map((t) => _tunnelToJson(t))
@@ -225,38 +231,22 @@ class LocalApiServer {
       } else if (path == '/servers' && method == 'GET') {
         await _writeJson(req, {
           'servers': proxyService.servers
-              .map((s) => {
-                    'id': s.id,
-                    'name': s.name,
-                    'host': s.host,
-                    'sshPort': s.sshPort,
-                    'socksPort': s.socksPort,
-                    'authType': s.authType,
-                    'enabled': s.isEnabled,
-                    'autoReconnect': s.autoReconnect,
-                    'connectOnStartup': s.connectOnStartup,
-                    'keyPath': s.keyPath,
-                  })
+              .map((s) => _serverToJson(s))
               .toList(),
         });
         return;
-
-        // ─── POST /servers/add ─────────────────────────────────────
       } else if (path == '/servers/add' && method == 'POST') {
         final body = await utf8.decoder.bind(req).join();
         final data = jsonDecode(body) as Map<String, dynamic>;
 
-        // Validate required fields
         if (data['host'] == null || (data['host'] as String).isEmpty) {
           req.response.statusCode = 400;
           await _writeJson(req, {'success': false, 'error': 'host is required'});
           return;
         }
-        if (data['username'] == null ||
-            (data['username'] as String).isEmpty) {
+        if (data['username'] == null || (data['username'] as String).isEmpty) {
           req.response.statusCode = 400;
-          await _writeJson(
-              req, {'success': false, 'error': 'username is required'});
+          await _writeJson(req, {'success': false, 'error': 'username is required'});
           return;
         }
 
@@ -277,19 +267,71 @@ class LocalApiServer {
           socksPort: data['socksPort'] ?? 1080,
           autoReconnect: data['autoReconnect'] ?? true,
           connectOnStartup: data['connectOnStartup'] ?? false,
+          proxyUsername: data['proxyAuth'] != null
+              ? data['proxyAuth']['username']
+              : data['proxyUsername'],
+          proxyPassword: data['proxyAuth'] != null
+              ? data['proxyAuth']['password']
+              : data['proxyPassword'],
         );
         await proxyService.addServer(server);
         await _writeJson(req, {'success': true, 'id': server.id});
         return;
 
-        // ─── POST /servers/delete/{id} ─────────────────────────────
+        // ─── PUT /servers/{id} — Server update/edit (#2) ──────────
+      } else if (path.startsWith('/servers/') &&
+          !path.startsWith('/servers/add') &&
+          !path.startsWith('/servers/delete/') &&
+          method == 'PUT') {
+        final id = path.replaceFirst('/servers/', '');
+        final existing = proxyService.servers.where((s) => s.id == id).firstOrNull;
+        if (existing == null) {
+          req.response.statusCode = 404;
+          await _writeJson(req, {'success': false, 'error': 'Server not found'});
+          return;
+        }
+        final body = await utf8.decoder.bind(req).join();
+        final data = jsonDecode(body) as Map<String, dynamic>;
+
+        // Update fields (keep existing values for fields not provided)
+        final updated = ServerConfig(
+          id: id,
+          name: data['name'] ?? existing.name,
+          host: data['host'] ?? existing.host,
+          sshPort: data['sshPort'] ?? existing.sshPort,
+          username: data['username'] ?? existing.username,
+          password: data['password'] ?? existing.password,
+          socksPort: data['socksPort'] ?? existing.socksPort,
+          authType: data['authType'] ?? existing.authType,
+          privateKey: data.containsKey('privateKey')
+              ? data['privateKey']
+              : existing.privateKey,
+          keyPassphrase: data.containsKey('keyPassphrase')
+              ? data['keyPassphrase']
+              : existing.keyPassphrase,
+          keyPath: data.containsKey('keyPath') ? data['keyPath'] : existing.keyPath,
+          autoReconnect: data['autoReconnect'] ?? existing.autoReconnect,
+          connectOnStartup: data['connectOnStartup'] ?? existing.connectOnStartup,
+          notificationsEnabled:
+              data['notificationsEnabled'] ?? existing.notificationsEnabled,
+          proxyUsername: data['proxyAuth'] != null
+              ? data['proxyAuth']['username']
+              : (data['proxyUsername'] ?? existing.proxyUsername),
+          proxyPassword: data['proxyAuth'] != null
+              ? data['proxyAuth']['password']
+              : (data['proxyPassword'] ?? existing.proxyPassword),
+        );
+        updated.isEnabled = existing.isEnabled;
+
+        await proxyService.updateServer(updated);
+        await _writeJson(req, {'success': true, 'id': id});
+        return;
+
       } else if (path.startsWith('/servers/delete/') && method == 'POST') {
         final id = path.replaceFirst('/servers/delete/', '');
         await proxyService.deleteServer(id);
         await _writeJson(req, {'success': true});
         return;
-
-        // ─── DELETE /servers/{id} (also supported) ─────────────────
       } else if (path.startsWith('/servers/') &&
           !path.startsWith('/servers/add') &&
           !path.startsWith('/servers/delete/') &&
@@ -299,7 +341,61 @@ class LocalApiServer {
         await _writeJson(req, {'success': true});
         return;
 
-        // ─── GET /scan/progress ────────────────────────────────────
+        // ─── Stats history (#5) ───────────────────────────────────
+      } else if (path.startsWith('/stats/') && method == 'GET') {
+        final id = path.replaceFirst('/stats/', '');
+        final period = req.uri.queryParameters['period'] ?? '24h';
+        final stats = await proxyService.statsDb.getStats(id, period);
+        await _writeJson(req, stats);
+        return;
+
+        // ─── Quick-connect profiles (#8) ──────────────────────────
+      } else if (path == '/profiles' && method == 'GET') {
+        await _writeJson(req, {
+          'profiles': proxyService.profiles.map((p) => p.toJson()).toList(),
+        });
+        return;
+      } else if (path == '/profiles/add' && method == 'POST') {
+        final body = await utf8.decoder.bind(req).join();
+        final data = jsonDecode(body) as Map<String, dynamic>;
+        if (data['serverId'] == null || data['name'] == null) {
+          req.response.statusCode = 400;
+          await _writeJson(req, {'success': false, 'error': 'serverId and name required'});
+          return;
+        }
+        // Verify server exists
+        final serverExists =
+            proxyService.servers.any((s) => s.id == data['serverId']);
+        if (!serverExists) {
+          req.response.statusCode = 404;
+          await _writeJson(req, {'success': false, 'error': 'Server not found'});
+          return;
+        }
+        final profile = QuickProfile(
+          id: generateUniqueId(),
+          serverId: data['serverId'],
+          name: data['name'],
+          socksPort: data['socksPort'] ?? 1080,
+        );
+        await proxyService.addProfile(profile);
+        await _writeJson(req, {'success': true, 'id': profile.id});
+        return;
+      } else if (path.startsWith('/profiles/connect/') && method == 'POST') {
+        final profileId = path.replaceFirst('/profiles/connect/', '');
+        try {
+          await proxyService.connectProfile(profileId);
+          await _writeJson(req, {'success': true, 'message': 'Connected via profile'});
+        } catch (e) {
+          req.response.statusCode = 500;
+          await _writeJson(req, {'success': false, 'error': e.toString()});
+        }
+        return;
+      } else if (path.startsWith('/profiles/') && method == 'DELETE') {
+        final id = path.replaceFirst('/profiles/', '');
+        await proxyService.deleteProfile(id);
+        await _writeJson(req, {'success': true});
+        return;
+
       } else if (path == '/scan/progress' && method == 'GET') {
         await _writeJson(req, {
           'scanning': proxyService.isScanning,
@@ -310,8 +406,6 @@ class LocalApiServer {
               proxyService.activeTunnels.where((t) => t.isExternal).length,
         });
         return;
-
-        // ─── GET /export ───────────────────────────────────────────
       } else if (path == '/export' && method == 'GET') {
         final includeKeys =
             req.uri.queryParameters['includeKeys'] == 'true';
@@ -323,8 +417,6 @@ class LocalApiServer {
           'includesKeys': includeKeys,
         });
         return;
-
-        // ─── POST /import ──────────────────────────────────────────
       } else if (path == '/import' && method == 'POST') {
         final body = await utf8.decoder.bind(req).join();
         final data = jsonDecode(body);
@@ -348,8 +440,6 @@ class LocalApiServer {
           'total': proxyService.servers.length,
         });
         return;
-
-        // ─── GET /logs ─────────────────────────────────────────────
       } else if (path == '/logs' && method == 'GET') {
         final limit =
             int.tryParse(req.uri.queryParameters['limit'] ?? '100') ??
@@ -418,55 +508,34 @@ class LocalApiServer {
       } else if (path == '/help' && method == 'GET') {
         final p = _activePort ?? port;
         await _writeJson(req, {
-          'api': 'SSH Proxy Manager API v4',
+          'api': 'SSH Proxy Manager API v5',
           'port': p,
           'endpoints': [
-            'GET  /ping                    — readiness probe (lightweight)',
-            'GET  /status                  — full status',
-            'GET  /tunnels                 — active tunnels with health info',
-            'GET  /servers                 — saved servers',
-            'POST /servers/add             — add server (JSON body)',
-            'POST /servers/delete/{id}     — delete server by id',
-            'DELETE /servers/{id}          — delete server by id',
-            'POST /connect/{id}            — connect server by ID',
-            'POST /disconnect/{id}         — disconnect server by ID',
-            'POST /disconnect-all          — stop all tunnels',
-            'POST /scan                    — scan all ports',
-            'GET  /scan/progress           — scan progress',
-            'GET  /logs?limit=100          — connection logs',
-            'GET  /export?includeKeys=true — export servers (optional: with keys)',
-            'POST /import                  — import/merge servers (JSON body)',
-            'GET  /help                    — this help',
+            'GET  /ping                       — readiness probe (no auth required)',
+            'GET  /status                     — full status',
+            'GET  /tunnels                    — active tunnels with health info',
+            'GET  /servers                    — saved servers',
+            'POST /servers/add                — add server (JSON body)',
+            'PUT  /servers/{id}               — update server',
+            'POST /servers/delete/{id}        — delete server by id',
+            'DELETE /servers/{id}             — delete server by id',
+            'POST /connect/{id}              — connect server by ID',
+            'POST /disconnect/{id}           — disconnect server by ID',
+            'POST /disconnect-all            — stop all tunnels',
+            'GET  /stats/{id}?period=1h|24h|7d — connection stats history',
+            'GET  /profiles                   — list quick-connect profiles',
+            'POST /profiles/add              — add profile',
+            'POST /profiles/connect/{id}     — connect via profile',
+            'DELETE /profiles/{id}           — delete profile',
+            'WS   /ws/events                 — real-time WebSocket events',
+            'POST /scan                      — scan all ports',
+            'GET  /scan/progress             — scan progress',
+            'GET  /logs?limit=100            — connection logs',
+            'GET  /export?includeKeys=true   — export servers',
+            'POST /import                    — import/merge servers',
+            'GET  /help                      — this help',
           ],
-          'serverAddFields': {
-            'required': ['host', 'username'],
-            'optional': [
-              'name',
-              'sshPort (default: 22)',
-              'socksPort (default: 1080)',
-              'password',
-              'privateKey (PEM string)',
-              'keyPath (path to key file)',
-              'keyPassphrase',
-              'authType (password|key)',
-              'autoReconnect (default: true)',
-              'connectOnStartup (default: false)',
-            ],
-          },
-          'termux_examples': [
-            '# Wait for API ready:',
-            'while ! curl -sf localhost:$p/ping; do sleep 1; done',
-            'curl localhost:$p/status',
-            'curl -X POST -H "Content-Type: application/json" '
-                '-d \'{"name":"My Server","host":"1.2.3.4","username":"root","password":"pass"}\' '
-                'localhost:$p/servers/add',
-            'curl -X POST -H "Content-Type: application/json" '
-                '-d \'{"name":"Key Server","host":"1.2.3.4","username":"root","keyPath":"/data/data/com.termux/files/home/.ssh/id_ed25519"}\' '
-                'localhost:$p/servers/add',
-            'curl -X POST localhost:$p/connect/{serverId}',
-            'curl localhost:$p/tunnels',
-            'curl "localhost:$p/export?includeKeys=true"',
-          ],
+          'auth': 'All endpoints except /ping require Authorization: Bearer <token> or ?token=<token> (when auth is enabled)',
         });
         return;
       } else {
@@ -486,11 +555,7 @@ class LocalApiServer {
     }
   }
 
-  /// Write a JSON response and close it immediately.
-  /// Each handler that calls this should `return` afterward.
   Future<void> _writeJson(HttpRequest req, Map<String, dynamic> data) async {
-    // Drain any unread request body first — if the input stream is not
-    // consumed, response.close() can hang on some Dart VM / Android builds.
     try {
       await req.drain<void>();
     } catch (_) {}
@@ -501,7 +566,24 @@ class LocalApiServer {
     await req.response.close();
   }
 
-  /// Convert an ActiveTunnel to a JSON map with full health info.
+  Map<String, dynamic> _serverToJson(ServerConfig s) {
+    return {
+      'id': s.id,
+      'name': s.name,
+      'host': s.host,
+      'sshPort': s.sshPort,
+      'socksPort': s.socksPort,
+      'username': s.username,
+      'authType': s.authType,
+      'enabled': s.isEnabled,
+      'autoReconnect': s.autoReconnect,
+      'connectOnStartup': s.connectOnStartup,
+      'keyPath': s.keyPath,
+      'notificationsEnabled': s.notificationsEnabled,
+      'hasProxyAuth': s.proxyUsername != null && s.proxyUsername!.isNotEmpty,
+    };
+  }
+
   Map<String, dynamic> _tunnelToJson(dynamic t) {
     return {
       'serverId': t.serverId,
@@ -516,7 +598,6 @@ class LocalApiServer {
       'bytesIn': t.bytesIn,
       'bytesOut': t.bytesOut,
       'bandwidth': t.bandwidthString,
-      // Health monitoring fields
       'latencyMs': t.latencyMs,
       'lastKeepaliveAt': t.lastKeepaliveAt?.toIso8601String(),
       'totalUptime': t.effectiveTotalUptime.inSeconds,
