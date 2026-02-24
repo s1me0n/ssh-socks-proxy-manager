@@ -208,7 +208,7 @@ class LocalApiServer {
       // All other endpoints require auth
       if (!_checkAuth(req)) {
         req.response.statusCode = 401;
-        await _writeJson(req, {'error': 'Unauthorized', 'hint': 'Provide Authorization: Bearer <token> header or ?token=<token> query param'});
+        await _writeJson(req, {'error': 'Unauthorized', 'code': 401});
         return;
       }
 
