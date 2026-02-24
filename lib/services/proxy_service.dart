@@ -603,9 +603,14 @@ class ProxyService extends ChangeNotifier {
           final prefs = await SharedPreferences.getInstance();
           await prefs.reload();
           final ownedTunnels = prefs.getStringList('active_tunnels') ?? [];
-          final isOwn = ownedTunnels.contains(server.id);
+          final isOwn = ownedTunnels.contains(server.id) ||
+              _activeReconnects.contains(server.id);
 
           client.close();
+          // Re-persist ownership if this is our reconnecting tunnel
+          if (isOwn) {
+            await _markTunnelOwned(server.id, true);
+          }
           activeTunnels.removeWhere((t) => t.serverId == server.id);
           activeTunnels.add(ActiveTunnel(
             serverId: server.id,
@@ -746,7 +751,12 @@ class ProxyService extends ChangeNotifier {
     final tunnel =
         activeTunnels.where((t) => t.serverId == serverId).firstOrNull;
     _cleanupConnection(serverId);
-    _markTunnelOwned(serverId, false);
+    // Only clear ownership if we won't auto-reconnect; otherwise keep it
+    // so TCP probes during the reconnect window don't flag the port as external.
+    final server0 = servers.where((s) => s.id == serverId).firstOrNull;
+    if (server0 == null || !server0.autoReconnect) {
+      _markTunnelOwned(serverId, false);
+    }
     activeTunnels.removeWhere((t) => t.serverId == serverId);
 
     // Record disconnect time for downtime tracking
