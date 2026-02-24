@@ -594,12 +594,48 @@ class ProxyService extends ChangeNotifier {
         serverSocket = await ServerSocket.bind(
             InternetAddress.anyIPv4, server.socksPort);
       } on SocketException {
-        // Fallback: bind with shared flag so multiple isolates can coexist
-        // until the old one dies.
-        serverSocket = await ServerSocket.bind(
-            InternetAddress.anyIPv4, server.socksPort, shared: true);
-        _log(server.name, 'warning',
-            'Port ${server.socksPort} was busy — bound with shared flag');
+        // Port is busy — check if an external proxy is already running
+        try {
+          final probe = await Socket.connect('127.0.0.1', server.socksPort,
+              timeout: const Duration(seconds: 2));
+          await probe.close();
+          // Port is active with an external process → register as external
+          client.close();
+          activeTunnels.removeWhere((t) => t.serverId == server.id);
+          activeTunnels.add(ActiveTunnel(
+            serverId: server.id,
+            serverName: server.name,
+            socksPort: server.socksPort,
+            startedAt: DateTime.now(),
+            isExternal: true,
+            proxyType: 'SOCKS5',
+            authType: 'unknown',
+          ));
+          _log(server.name, 'info',
+              'Port ${server.socksPort} active externally — registered as external tunnel');
+          eventBroadcaster.emit('connected', {
+            'serverId': server.id,
+            'name': server.name,
+            'socksPort': server.socksPort,
+            'source': 'external',
+          });
+          _notifyTunnelCount();
+          notifyListeners();
+          return;
+        } catch (_) {
+          // Port is busy but nothing is listening — try shared bind
+          try {
+            serverSocket = await ServerSocket.bind(
+                InternetAddress.anyIPv4, server.socksPort, shared: true);
+            _log(server.name, 'warning',
+                'Port ${server.socksPort} was busy — bound with shared flag');
+          } on SocketException {
+            client.close();
+            _log(server.name, 'error',
+                'Port ${server.socksPort} is busy and cannot be bound');
+            rethrow;
+          }
+        }
       }
       _serverSockets[server.id] = serverSocket;
 

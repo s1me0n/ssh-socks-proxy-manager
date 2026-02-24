@@ -599,6 +599,7 @@ class LocalApiServer {
       'uptime': t.uptime.inSeconds,
       'uptimeStr': t.uptimeString,
       'isExternal': t.isExternal,
+      'source': t.isExternal ? 'external' : 'internal',
       'reconnectCount': t.reconnectCount,
       'proxyType': t.proxyType,
       'authType': t.authType,

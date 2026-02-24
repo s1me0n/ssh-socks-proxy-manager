@@ -51,48 +51,77 @@ class ServersTab extends StatelessWidget {
                 final s = svc.servers[i];
                 final isActive = svc.activeTunnels
                     .any((t) => t.serverId == s.id && !t.isExternal);
+                final isExternal = svc.activeTunnels
+                    .any((t) => t.serverId == s.id && t.isExternal);
+                final statusColor = isActive
+                    ? Colors.green
+                    : isExternal
+                        ? Colors.orange
+                        : Colors.grey.shade700;
+                final statusText = isExternal
+                    ? '  ⚡ Active (external)'
+                    : '';
                 return Card(
                   margin: const EdgeInsets.symmetric(
                       horizontal: 12, vertical: 6),
                   child: ListTile(
                     leading: CircleAvatar(
-                      backgroundColor:
-                          isActive ? Colors.green : Colors.grey.shade700,
+                      backgroundColor: statusColor,
                       child: Icon(
-                          s.authType == 'key'
-                              ? Icons.vpn_key
-                              : Icons.dns,
+                          isExternal
+                              ? Icons.wifi_find
+                              : s.authType == 'key'
+                                  ? Icons.vpn_key
+                                  : Icons.dns,
                           color: Colors.white),
                     ),
                     title: Text(s.name),
                     subtitle: Text(
                         '${s.username}@${s.host}:${s.sshPort}  →  SOCKS :${s.socksPort}'
-                        '  (${s.authType == 'key' ? 'key' : 'pass'})'),
+                        '  (${s.authType == 'key' ? 'key' : 'pass'})$statusText'),
                     trailing: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          IconButton(
-                            icon: Icon(
-                              isActive ? Icons.stop : Icons.play_arrow,
-                              color: isActive ? Colors.red : Colors.green,
-                            ),
-                            onPressed: () async {
-                              if (isActive) {
-                                svc.disconnectTunnel(s.id);
-                              } else {
-                                try {
-                                  await svc.connectTunnel(s);
-                                } catch (e) {
-                                  if (ctx.mounted) {
-                                    ScaffoldMessenger.of(ctx).showSnackBar(
-                                      SnackBar(
-                                          content: Text('Error: $e'),
-                                          backgroundColor: Colors.red));
+                          if (isExternal)
+                            IconButton(
+                              icon: const Icon(Icons.content_copy,
+                                  color: Colors.orange),
+                              tooltip: 'Copy kill command',
+                              onPressed: () {
+                                final killCmd =
+                                    'kill \$(lsof -ti :${s.socksPort})';
+                                Clipboard.setData(
+                                    ClipboardData(text: killCmd));
+                                ScaffoldMessenger.of(ctx).showSnackBar(
+                                  SnackBar(
+                                      content: Text(
+                                          'Copied: $killCmd\nRun in Termux to stop the proxy')),
+                                );
+                              },
+                            )
+                          else
+                            IconButton(
+                              icon: Icon(
+                                isActive ? Icons.stop : Icons.play_arrow,
+                                color: isActive ? Colors.red : Colors.green,
+                              ),
+                              onPressed: () async {
+                                if (isActive) {
+                                  svc.disconnectTunnel(s.id);
+                                } else {
+                                  try {
+                                    await svc.connectTunnel(s);
+                                  } catch (e) {
+                                    if (ctx.mounted) {
+                                      ScaffoldMessenger.of(ctx).showSnackBar(
+                                        SnackBar(
+                                            content: Text('Error: $e'),
+                                            backgroundColor: Colors.red));
+                                    }
                                   }
                                 }
-                              }
-                            },
-                          ),
+                              },
+                            ),
                           PopupMenuButton(
                             itemBuilder: (_) => [
                               const PopupMenuItem(
