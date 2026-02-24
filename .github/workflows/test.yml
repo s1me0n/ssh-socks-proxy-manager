@@ -35,15 +35,21 @@ jobs:
       - name: Build debug APK
         run: flutter build apk --debug
 
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Run API tests on emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
           arch: x86_64
-          target: default
+          profile: Nexus 6
           force-avd-creation: false
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: false
+          emulator-options: '-no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none'
+          disable-animations: true
           script: chmod +x integration_test/run_emulator_tests.sh && bash integration_test/run_emulator_tests.sh
 
       - name: Dump logcat on failure
