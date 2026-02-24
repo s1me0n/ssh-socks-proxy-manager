@@ -489,7 +489,7 @@ class LocalApiServer {
         return;
       } else if (path.startsWith('/disconnect/') && method == 'POST') {
         final serverId = path.replaceFirst('/disconnect/', '');
-        proxyService.disconnectTunnel(serverId);
+        proxyService.disconnectTunnel(serverId, reason: 'api_disconnect');
         await _writeJson(
             req, {'success': true, 'message': 'Disconnected'});
         return;
@@ -500,7 +500,7 @@ class LocalApiServer {
         return;
       } else if (path == '/disconnect-all' && method == 'POST') {
         for (final t in List.from(proxyService.activeTunnels)) {
-          if (!t.isExternal) proxyService.disconnectTunnel(t.serverId);
+          if (!t.isExternal) proxyService.disconnectTunnel(t.serverId, reason: 'api_disconnect_all');
         }
         await _writeJson(req,
             {'success': true, 'message': 'All tunnels disconnected'});

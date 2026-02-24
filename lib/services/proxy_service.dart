@@ -444,7 +444,7 @@ class ProxyService extends ChangeNotifier {
   // ─── Disconnect reason classification ─────────────────────────────
 
   /// Classify an error into a specific disconnect reason.
-  String _classifyDisconnectReason(dynamic error) {
+  String _classifyDisconnectReason(dynamic error, {String? host}) {
     final msg = error.toString().toLowerCase();
     if (msg.contains('authentication') ||
         msg.contains('auth') && msg.contains('fail') ||
@@ -462,13 +462,31 @@ class ProxyService extends ChangeNotifier {
         msg.contains('dns') ||
         msg.contains('getaddrinfo') ||
         msg.contains('nodename nor servname')) {
-      return 'dns_error';
+      return 'dns_error: ${host ?? 'unknown'}';
     }
-    if (msg.contains('keepalive') || msg.contains('keep-alive') || msg.contains('timed out')) {
+    if (msg.contains('timed out') || msg.contains('timeout')) {
+      if (msg.contains('keepalive') || msg.contains('keep-alive')) {
+        return 'keepalive_timeout';
+      }
+      return 'socket_timeout';
+    }
+    if (msg.contains('connection closed') ||
+        msg.contains('connection reset') ||
+        msg.contains('broken pipe') ||
+        msg.contains('eof') ||
+        msg.contains('remote closed')) {
+      return 'remote_closed';
+    }
+    if (msg.contains('keepalive') || msg.contains('keep-alive')) {
       return 'keepalive_timeout';
     }
-    // Generic SSH error
-    return 'ssh_error: ${error.toString().length > 100 ? error.toString().substring(0, 100) : error}';
+    // Generic SSH error for SSH-related messages, otherwise unknown
+    final errorStr = error.toString();
+    final truncated = errorStr.length > 100 ? errorStr.substring(0, 100) : errorStr;
+    if (msg.contains('ssh') || msg.contains('socket') || msg.contains('channel')) {
+      return 'ssh_error: $truncated';
+    }
+    return 'unknown: $truncated';
   }
 
   // ─── SOCKS5 Tunnel ───────────────────────────────────────────────
@@ -574,7 +592,7 @@ class ProxyService extends ChangeNotifier {
       _notifyTunnelCount();
       notifyListeners();
     } on SocketException catch (e) {
-      final reason = _classifyDisconnectReason(e);
+      final reason = _classifyDisconnectReason(e, host: server.host);
       _log(server.name, 'error', 'Connection failed: $reason');
       eventBroadcaster.emit('error', {
         'serverId': server.id,
@@ -582,7 +600,7 @@ class ProxyService extends ChangeNotifier {
       });
       rethrow;
     } catch (e) {
-      final reason = _classifyDisconnectReason(e);
+      final reason = _classifyDisconnectReason(e, host: server.host);
       _log(server.name, 'error', 'Connection failed: $reason');
       eventBroadcaster.emit('error', {
         'serverId': server.id,
@@ -596,11 +614,12 @@ class ProxyService extends ChangeNotifier {
       String serverId, SSHClient client, String serverName) {
     client.done.then((_) {
       if (!_disconnecting.contains(serverId)) {
-        _handleUnexpectedDisconnect(serverId, 'ssh_error: connection closed');
+        _handleUnexpectedDisconnect(serverId, 'remote_closed');
       }
     }).catchError((e) {
       if (!_disconnecting.contains(serverId)) {
-        final reason = _classifyDisconnectReason(e);
+        final server = servers.where((s) => s.id == serverId).firstOrNull;
+        final reason = _classifyDisconnectReason(e, host: server?.host);
         _handleUnexpectedDisconnect(serverId, reason);
       }
     });
