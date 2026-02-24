@@ -489,7 +489,15 @@ class LocalApiServer {
   /// Write a JSON response and close it immediately.
   /// Each handler that calls this should `return` afterward.
   Future<void> _writeJson(HttpRequest req, Map<String, dynamic> data) async {
-    req.response.write(jsonEncode(data));
+    // Drain any unread request body first — if the input stream is not
+    // consumed, response.close() can hang on some Dart VM / Android builds.
+    try {
+      await req.drain<void>();
+    } catch (_) {}
+    final body = jsonEncode(data);
+    final bytes = utf8.encode(body);
+    req.response.headers.contentLength = bytes.length;
+    req.response.add(bytes);
     await req.response.close();
   }
 
