@@ -599,7 +599,12 @@ class ProxyService extends ChangeNotifier {
           final probe = await Socket.connect('127.0.0.1', server.socksPort,
               timeout: const Duration(seconds: 2));
           await probe.close();
-          // Port is active with an external process → register as external
+          // Port is active — check if it's our own background service tunnel
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.reload();
+          final ownedTunnels = prefs.getStringList('active_tunnels') ?? [];
+          final isOwn = ownedTunnels.contains(server.id);
+
           client.close();
           activeTunnels.removeWhere((t) => t.serverId == server.id);
           activeTunnels.add(ActiveTunnel(
@@ -607,12 +612,14 @@ class ProxyService extends ChangeNotifier {
             serverName: server.name,
             socksPort: server.socksPort,
             startedAt: DateTime.now(),
-            isExternal: true,
+            isExternal: !isOwn,
             proxyType: 'SOCKS5',
-            authType: 'unknown',
+            authType: isOwn ? 'internal' : 'unknown',
           ));
           _log(server.name, 'info',
-              'Port ${server.socksPort} active externally — registered as external tunnel');
+              isOwn
+                  ? 'Port ${server.socksPort} owned by background service — registered as internal tunnel'
+                  : 'Port ${server.socksPort} active externally — registered as external tunnel');
           eventBroadcaster.emit('connected', {
             'serverId': server.id,
             'name': server.name,
@@ -665,6 +672,9 @@ class ProxyService extends ChangeNotifier {
       _clients[server.id] = client;
       server.isEnabled = true;
       await _saveServers();
+
+      // Track this tunnel in SharedPreferences so other isolates know it's ours
+      await _markTunnelOwned(server.id, true);
 
       activeTunnels.removeWhere((t) => t.serverId == server.id);
       activeTunnels.add(tunnel);
@@ -736,6 +746,7 @@ class ProxyService extends ChangeNotifier {
     final tunnel =
         activeTunnels.where((t) => t.serverId == serverId).firstOrNull;
     _cleanupConnection(serverId);
+    _markTunnelOwned(serverId, false);
     activeTunnels.removeWhere((t) => t.serverId == serverId);
 
     // Record disconnect time for downtime tracking
@@ -778,6 +789,18 @@ class ProxyService extends ChangeNotifier {
 
     _notifyTunnelCount();
     notifyListeners();
+  }
+
+  /// Mark/unmark a tunnel as owned by this app in SharedPreferences.
+  Future<void> _markTunnelOwned(String serverId, bool owned) async {
+    final prefs = await SharedPreferences.getInstance();
+    final tunnels = (prefs.getStringList('active_tunnels') ?? []).toSet();
+    if (owned) {
+      tunnels.add(serverId);
+    } else {
+      tunnels.remove(serverId);
+    }
+    await prefs.setStringList('active_tunnels', tunnels.toList());
   }
 
   void _cleanupConnection(String serverId) {
@@ -1036,6 +1059,7 @@ class ProxyService extends ChangeNotifier {
     _activeReconnects.remove(serverId);
 
     _cleanupConnection(serverId);
+    _markTunnelOwned(serverId, false);
 
     final tunnel =
         activeTunnels.where((t) => t.serverId == serverId).firstOrNull;
