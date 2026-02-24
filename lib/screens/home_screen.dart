@@ -26,9 +26,9 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _resolveApiAddress() async {
     try {
       final proxyService = Provider.of<ProxyService>(context, listen: false);
-      // Ensure API server is running (idempotent — uses mutex inside)
-      await proxyService.startApiServer();
-      // Wait for the API server to be actually ready (bound and listening)
+      // API server runs in the background service isolate — do NOT start
+      // a second one here.  Just wait for the background one to be ready
+      // so we can read its port for the UI badge.
       await proxyService.apiReady.timeout(
         const Duration(seconds: 15),
         onTimeout: () {

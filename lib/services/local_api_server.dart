@@ -64,8 +64,7 @@ class LocalApiServer {
       try {
         debugPrint(
             '🔌 Starting API server on 0.0.0.0:$port (attempt $attempt/$_maxRetries)...');
-        _server = await HttpServer.bind(InternetAddress.anyIPv4, port,
-            shared: true);
+        _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
         _activePort = port;
         _running = true;
         _attachListener();
@@ -80,8 +79,7 @@ class LocalApiServer {
         debugPrint(
             '🔌 Trying fallback port $_fallbackPort (attempt $attempt/$_maxRetries)...');
         _server = await HttpServer.bind(
-            InternetAddress.anyIPv4, _fallbackPort,
-            shared: true);
+            InternetAddress.anyIPv4, _fallbackPort);
         _activePort = _fallbackPort;
         _running = true;
         _attachListener();
