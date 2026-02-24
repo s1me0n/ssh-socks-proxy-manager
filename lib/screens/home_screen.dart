@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'servers_tab.dart';
@@ -16,11 +17,23 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   int _index = 0;
   String _apiAddress = 'localhost:7070';
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     _resolveApiAddress();
+    // Periodically reload servers from storage so that changes made by
+    // the background-service isolate (e.g. via Termux API) are reflected.
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 3),
+      (_) {
+        if (mounted) {
+          final svc = Provider.of<ProxyService>(context, listen: false);
+          svc.reloadServers();
+        }
+      },
+    );
   }
 
   Future<void> _resolveApiAddress() async {
@@ -47,6 +60,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     // API server lifecycle is owned by ProxyService, NOT HomeScreen.
     // Do NOT stop it here — it must survive widget rebuilds.
     super.dispose();

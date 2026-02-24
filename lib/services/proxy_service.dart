@@ -224,6 +224,47 @@ class ProxyService extends ChangeNotifier {
     }
   }
 
+  /// Public method to reload server list from SharedPreferences.
+  /// Used by the UI to pick up changes made by the background-service isolate.
+  Future<void> reloadServers() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      final data = prefs.getStringList('servers') ?? [];
+      final loaded =
+          data.map((s) => ServerConfig.fromJson(jsonDecode(s))).toList();
+
+      // Only update if the server list actually changed (avoid unnecessary rebuilds)
+      if (loaded.length != servers.length ||
+          data.join() !=
+              servers.map((s) => jsonEncode(s.toJson())).join()) {
+        // Preserve secrets from current in-memory servers
+        for (final s in loaded) {
+          final existing = servers.where((x) => x.id == s.id).firstOrNull;
+          if (existing != null) {
+            s.password = existing.password;
+            s.privateKey = existing.privateKey;
+            s.keyPassphrase = existing.keyPassphrase;
+          } else {
+            // New server from API — load secrets
+            try {
+              s.password =
+                  await _secureStorage.read(key: 'password_${s.id}') ?? '';
+              s.privateKey =
+                  await _secureStorage.read(key: 'privateKey_${s.id}');
+              s.keyPassphrase =
+                  await _secureStorage.read(key: 'keyPassphrase_${s.id}');
+            } catch (_) {}
+          }
+        }
+        servers = loaded;
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('reloadServers error: $e');
+    }
+  }
+
   Future<void> _saveServers() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setStringList(
@@ -541,10 +582,25 @@ class ProxyService extends ChangeNotifier {
       // Close any lingering server socket before binding
       final existingSocket = _serverSockets.remove(server.id);
       if (existingSocket != null) {
-        await existingSocket.close();
+        try {
+          await existingSocket.close();
+        } catch (_) {}
       }
-      final serverSocket =
-          await ServerSocket.bind(InternetAddress.anyIPv4, server.socksPort);
+      // Use shared: true to avoid SocketException when the port is still
+      // held by a previous isolate / background-service instance that
+      // hasn't released the socket yet (e.g. after hot-restart or update).
+      ServerSocket serverSocket;
+      try {
+        serverSocket = await ServerSocket.bind(
+            InternetAddress.anyIPv4, server.socksPort);
+      } on SocketException {
+        // Fallback: bind with shared flag so multiple isolates can coexist
+        // until the old one dies.
+        serverSocket = await ServerSocket.bind(
+            InternetAddress.anyIPv4, server.socksPort, shared: true);
+        _log(server.name, 'warning',
+            'Port ${server.socksPort} was busy — bound with shared flag');
+      }
       _serverSockets[server.id] = serverSocket;
 
       final hasProxyAuth = server.proxyUsername != null &&

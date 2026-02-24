@@ -106,7 +106,7 @@ class ActiveTunnelsTab extends StatelessWidget {
                                 fontSize: 12,
                                 color: Colors.orange,
                                 letterSpacing: 1.2))),
-                    ...external.map((t) => _TunnelCard(tunnel: t)),
+                    ...external.map((t) => _ExternalTunnelCard(tunnel: t)),
                   ],
                 ]),
         ),
@@ -163,9 +163,67 @@ class _TunnelCard extends StatelessWidget {
             ? IconButton(
                 icon: const Icon(Icons.stop_circle, color: Colors.red),
                 onPressed: onDisconnect)
-            : const Tooltip(
-                message: 'External — not managed by this app',
-                child: Icon(Icons.info_outline, color: Colors.orange)),
+            : null,
+      ),
+    );
+  }
+}
+
+class _ExternalTunnelCard extends StatelessWidget {
+  final ActiveTunnel tunnel;
+  const _ExternalTunnelCard({required this.tunnel});
+
+  @override
+  Widget build(BuildContext context) {
+    final pid = tunnel.serverId; // external tunnels store PID-like info
+    final killCmd = 'kill \$(lsof -ti :${tunnel.socksPort})';
+
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: ListTile(
+        leading: const CircleAvatar(
+          backgroundColor: Colors.orange,
+          child: Icon(Icons.wifi_find, color: Colors.white),
+        ),
+        title: Text(tunnel.serverName),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'SOCKS5  127.0.0.1:${tunnel.socksPort}  •  ${tunnel.uptimeString}\n'
+              'Type: ${tunnel.proxyType}  •  Auth: ${tunnel.authType}',
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Icon(Icons.info_outline,
+                    size: 14, color: Colors.orange),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    'Stop via Termux: $killCmd',
+                    style: const TextStyle(
+                        fontSize: 11, color: Colors.orange),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.copy, size: 16),
+                  tooltip: 'Copy kill command',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: killCmd));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text('Kill command copied!')),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ],
+        ),
+        isThreeLine: true,
       ),
     );
   }
