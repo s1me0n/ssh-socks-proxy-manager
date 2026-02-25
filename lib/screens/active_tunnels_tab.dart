@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -94,8 +95,19 @@ class ActiveTunnelsTab extends StatelessWidget {
                                 letterSpacing: 1.2))),
                     ...managed.map((t) => _TunnelCard(
                         tunnel: t,
-                        onDisconnect: () =>
-                            svc.disconnectTunnel(t.serverId))),
+                        onDisconnect: () async {
+                          final client = HttpClient();
+                          try {
+                            final req = await client.postUrl(
+                                Uri.parse('http://$apiAddress/disconnect/${t.serverId}'));
+                            req.headers.contentLength = 0;
+                            final resp = await req.close();
+                            await resp.drain<void>();
+                          } catch (_) {
+                          } finally {
+                            client.close();
+                          }
+                        })),
                   ],
                   if (external.isNotEmpty) ...[
                     const Padding(

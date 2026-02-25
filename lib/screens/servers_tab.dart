@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -106,19 +107,25 @@ class ServersTab extends StatelessWidget {
                                 color: isActive ? Colors.red : Colors.green,
                               ),
                               onPressed: () async {
-                                if (isActive) {
-                                  svc.disconnectTunnel(s.id);
-                                } else {
-                                  try {
-                                    await svc.connectTunnel(s);
-                                  } catch (e) {
-                                    if (ctx.mounted) {
-                                      ScaffoldMessenger.of(ctx).showSnackBar(
-                                        SnackBar(
-                                            content: Text('Error: $e'),
-                                            backgroundColor: Colors.red));
-                                    }
+                                final base = 'http://$apiAddress';
+                                final client = HttpClient();
+                                try {
+                                  final uri = isActive
+                                      ? Uri.parse('$base/disconnect/${s.id}')
+                                      : Uri.parse('$base/connect/${s.id}');
+                                  final req = await client.postUrl(uri);
+                                  req.headers.contentLength = 0;
+                                  final resp = await req.close();
+                                  await resp.drain<void>();
+                                } catch (e) {
+                                  if (ctx.mounted) {
+                                    ScaffoldMessenger.of(ctx).showSnackBar(
+                                      SnackBar(
+                                          content: Text('Error: $e'),
+                                          backgroundColor: Colors.red));
                                   }
+                                } finally {
+                                  client.close();
                                 }
                               },
                             ),
