@@ -595,6 +595,7 @@ class ProxyService extends ChangeNotifier {
       if (server.reverseProxy) {
         try {
           final remoteForward = await client.forwardRemote(port: server.reverseProxyPort);
+          if (remoteForward == null) throw Exception('Server rejected remote forward');
           remoteForward.connections.listen((connection) {
             // Forward each incoming connection on the remote side to the local SOCKS port
             Socket.connect('127.0.0.1', server.socksPort,
