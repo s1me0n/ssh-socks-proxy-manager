@@ -114,6 +114,7 @@ class ProxyService extends ChangeNotifier {
     await _loadApiAuth();
     await _loadServers();
     await _loadProfiles();
+    await _restoreOwnedTunnels();
     _serversLoaded!.complete();
     if (startApi) {
       await _initApiServer();
@@ -799,6 +800,60 @@ class ProxyService extends ChangeNotifier {
 
     _notifyTunnelCount();
     notifyListeners();
+  }
+
+  /// Restore tunnels that were started by this app (background service) before
+  /// the UI was re-created.  Runs during init, BEFORE any connect attempts, so
+  /// the UI sees them as "internal" instead of "external".
+  Future<void> _restoreOwnedTunnels() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final owned = prefs.getStringList('active_tunnels') ?? [];
+    if (owned.isEmpty) return;
+
+    for (final serverId in owned) {
+      final server = servers.cast<ServerConfig?>().firstWhere(
+            (s) => s?.id == serverId,
+            orElse: () => null,
+          );
+      if (server == null) continue;
+
+      // Already tracked (e.g. from a prior code path)
+      if (activeTunnels.any((t) => t.serverId == serverId)) continue;
+
+      // TCP probe — is the SOCKS port actually alive?
+      try {
+        final probe = await Socket.connect(
+          '127.0.0.1',
+          server.socksPort,
+          timeout: const Duration(seconds: 2),
+        );
+        await probe.close();
+
+        // Port is alive and we own it → register as internal
+        activeTunnels.add(ActiveTunnel(
+          serverId: server.id,
+          serverName: server.name,
+          socksPort: server.socksPort,
+          startedAt: DateTime.now(),
+          isExternal: false,
+          proxyType: 'SOCKS5',
+          authType: 'internal',
+        ));
+        _log(server.name, 'info',
+            'Restored owned tunnel on port ${server.socksPort} as internal');
+      } catch (_) {
+        // Port not active → background service died; clean up ownership
+        await _markTunnelOwned(serverId, false);
+        _log(server.name, 'info',
+            'Owned tunnel on port ${server.socksPort} no longer active — cleared');
+      }
+    }
+
+    if (activeTunnels.isNotEmpty) {
+      _notifyTunnelCount();
+      notifyListeners();
+    }
   }
 
   /// Mark/unmark a tunnel as owned by this app in SharedPreferences.
