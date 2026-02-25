@@ -280,6 +280,8 @@ class LocalApiServer {
           proxyPassword: data['proxyAuth'] != null
               ? data['proxyAuth']['password']
               : data['proxyPassword'],
+          reverseProxy: data['reverseProxy'] ?? false,
+          reverseProxyPort: data['reverseProxyPort'] ?? 1080,
         );
         await proxyService.addServer(server);
         await _writeJson(req, {'success': true, 'id': server.id});
@@ -327,6 +329,8 @@ class LocalApiServer {
           proxyPassword: data['proxyAuth'] != null
               ? data['proxyAuth']['password']
               : (data['proxyPassword'] ?? existing.proxyPassword),
+          reverseProxy: data['reverseProxy'] ?? existing.reverseProxy,
+          reverseProxyPort: data['reverseProxyPort'] ?? existing.reverseProxyPort,
         );
         updated.isEnabled = existing.isEnabled;
 
@@ -480,6 +484,7 @@ class LocalApiServer {
         }
         try {
           await proxyService.connectTunnel(server);
+          proxyService.eventBroadcaster.emit('refresh', {});
           await _writeJson(req, {
             'success': true,
             'message': 'Connected to ${server.name}',
@@ -497,6 +502,7 @@ class LocalApiServer {
       } else if (path.startsWith('/disconnect/') && method == 'POST') {
         final serverId = path.replaceFirst('/disconnect/', '');
         proxyService.disconnectTunnel(serverId, reason: 'api_disconnect');
+        proxyService.eventBroadcaster.emit('refresh', {});
         await _writeJson(
             req, {'success': true, 'message': 'Disconnected'});
         return;
@@ -588,6 +594,8 @@ class LocalApiServer {
       'keyPath': s.keyPath,
       'notificationsEnabled': s.notificationsEnabled,
       'hasProxyAuth': s.proxyUsername != null && s.proxyUsername!.isNotEmpty,
+      'reverseProxy': s.reverseProxy,
+      'reverseProxyPort': s.reverseProxyPort,
     };
   }
 

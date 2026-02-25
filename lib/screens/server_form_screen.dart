@@ -20,6 +20,8 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
   late String _authType;
   late bool _autoReconnect;
   late bool _connectOnStartup;
+  late bool _reverseProxy;
+  late TextEditingController _reverseProxyPort;
 
   @override
   void initState() {
@@ -37,6 +39,8 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     _authType = s?.authType ?? 'password';
     _autoReconnect = s?.autoReconnect ?? true;
     _connectOnStartup = s?.connectOnStartup ?? false;
+    _reverseProxy = s?.reverseProxy ?? false;
+    _reverseProxyPort = TextEditingController(text: '${s?.reverseProxyPort ?? 1080}');
   }
 
   @override
@@ -50,6 +54,7 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
     _privateKey.dispose();
     _keyPassphrase.dispose();
     _keyPath.dispose();
+    _reverseProxyPort.dispose();
     super.dispose();
   }
 
@@ -221,6 +226,31 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
             value: _connectOnStartup,
             onChanged: (v) => setState(() => _connectOnStartup = v),
           ),
+          const Divider(),
+          const Text('Reverse Proxy',
+              style: TextStyle(fontSize: 13, color: Colors.grey)),
+          const SizedBox(height: 8),
+          SwitchListTile(
+            title: const Text('Expose SOCKS to server'),
+            subtitle: const Text(
+                'Forward local SOCKS proxy to the SSH server',
+                style: TextStyle(fontSize: 12)),
+            value: _reverseProxy,
+            onChanged: (v) => setState(() => _reverseProxy = v),
+          ),
+          if (_reverseProxy)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: TextFormField(
+                controller: _reverseProxyPort,
+                decoration: const InputDecoration(
+                  labelText: 'Remote Port',
+                  prefixIcon: Icon(Icons.upload),
+                  hintText: '1080',
+                ),
+                keyboardType: TextInputType.number,
+              ),
+            ),
           const SizedBox(height: 16),
 
           FilledButton.icon(
@@ -251,6 +281,8 @@ class _ServerFormScreenState extends State<ServerFormScreen> {
                     : null,
                 autoReconnect: _autoReconnect,
                 connectOnStartup: _connectOnStartup,
+                reverseProxy: _reverseProxy,
+                reverseProxyPort: int.tryParse(_reverseProxyPort.text) ?? 1080,
               );
               if (isEdit) {
                 svc.updateServer(cfg);

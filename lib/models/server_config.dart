@@ -16,6 +16,8 @@ class ServerConfig {
   bool notificationsEnabled; // per-server disconnect/reconnect notifications
   String? proxyUsername; // SOCKS5 proxy auth username
   String? proxyPassword; // SOCKS5 proxy auth password
+  bool reverseProxy; // expose local SOCKS to remote server via -R
+  int reverseProxyPort; // remote port on the SSH server for reverse proxy
 
   ServerConfig({
     required this.id,
@@ -35,6 +37,8 @@ class ServerConfig {
     this.notificationsEnabled = true,
     this.proxyUsername,
     this.proxyPassword,
+    this.reverseProxy = false,
+    this.reverseProxyPort = 1080,
   });
 
   /// Serialize to JSON — secrets (password, privateKey, keyPassphrase) are NOT included.
@@ -54,6 +58,8 @@ class ServerConfig {
         'notificationsEnabled': notificationsEnabled,
         'proxyUsername': proxyUsername,
         'proxyPassword': proxyPassword,
+        'reverseProxy': reverseProxy,
+        'reverseProxyPort': reverseProxyPort,
       };
 
   factory ServerConfig.fromJson(Map<String, dynamic> j) => ServerConfig(
@@ -72,5 +78,7 @@ class ServerConfig {
         notificationsEnabled: j['notificationsEnabled'] ?? true,
         proxyUsername: j['proxyUsername'],
         proxyPassword: j['proxyPassword'],
+        reverseProxy: j['reverseProxy'] ?? false,
+        reverseProxyPort: j['reverseProxyPort'] ?? 1080,
       );
 }

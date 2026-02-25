@@ -101,6 +101,16 @@ class ProxyService extends ChangeNotifier {
   /// Guards against concurrent _loadServers / _saveServers races.
   Completer<void>? _serversLoaded;
 
+  /// Completes when the full init sequence (including _restoreOwnedTunnels) is done.
+  final Completer<void> _initCompleted = Completer<void>();
+
+  /// True while the init sequence is still running.
+  bool get initializing => !_initCompleted.isCompleted;
+
+  /// Future that completes when init is done. UI should await this before
+  /// starting periodic refresh timers to avoid the "external" false-positive.
+  Future<void> get initComplete => _initCompleted.future;
+
   ProxyService({bool startApi = true}) {
     _startHealthCheck();
     _startStatsCollection();
@@ -116,6 +126,7 @@ class ProxyService extends ChangeNotifier {
     await _loadProfiles();
     await _restoreOwnedTunnels();
     _serversLoaded!.complete();
+    if (!_initCompleted.isCompleted) _initCompleted.complete();
     if (startApi) {
       await _initApiServer();
     } else {
@@ -579,6 +590,45 @@ class ProxyService extends ChangeNotifier {
       await client.authenticated;
       _log(server.name, 'connected',
           'SSH authenticated (${server.authType})');
+
+      // ── Reverse SOCKS proxy: expose local SOCKS port to the server ──
+      if (server.reverseProxy) {
+        try {
+          final remoteForward = await client.forwardRemote(port: server.reverseProxyPort);
+          remoteForward.connections.listen((connection) {
+            // Forward each incoming connection on the remote side to the local SOCKS port
+            Socket.connect('127.0.0.1', server.socksPort,
+                    timeout: const Duration(seconds: 5))
+                .then((localSocket) {
+              connection.stream.listen(
+                (data) {
+                  try {
+                    localSocket.add(data);
+                  } catch (_) {}
+                },
+                onDone: () => localSocket.destroy(),
+                onError: (_) => localSocket.destroy(),
+              );
+              localSocket.listen(
+                (data) {
+                  try {
+                    connection.sink.add(data);
+                  } catch (_) {}
+                },
+                onDone: () => connection.sink.close(),
+                onError: (_) => connection.sink.close(),
+              );
+            }).catchError((_) {
+              connection.sink.close();
+            });
+          });
+          _log(server.name, 'info',
+              'Reverse proxy: remote :${server.reverseProxyPort} → local :${server.socksPort}');
+        } catch (e) {
+          _log(server.name, 'warning',
+              'Failed to set up reverse proxy: $e');
+        }
+      }
 
       // Close any lingering server socket before binding
       final existingSocket = _serverSockets.remove(server.id);

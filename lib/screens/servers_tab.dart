@@ -59,9 +59,12 @@ class ServersTab extends StatelessWidget {
                     : isExternal
                         ? Colors.orange
                         : Colors.grey.shade700;
+                final reverseText = isActive && s.reverseProxy
+                    ? '  ↑ Exposed :${s.reverseProxyPort}'
+                    : '';
                 final statusText = isExternal
                     ? '  ⚡ Active (external)'
-                    : '';
+                    : reverseText;
                 return Card(
                   margin: const EdgeInsets.symmetric(
                       horizontal: 12, vertical: 6),
